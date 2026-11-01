@@ -20,6 +20,7 @@ export type BundleListItem = {
   revenue: number;
   clicks: number;
   conversions: number;
+  notes: string | null;
   isArchived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -47,6 +48,7 @@ export type BundleFacets = {
   offers: Option[];
   buyers: Option[];
   geos: Option[];
+  tags: (Option & { color: string })[];
 };
 
 export type BulkActionKind = "status" | "archive" | "unarchive" | "delete";

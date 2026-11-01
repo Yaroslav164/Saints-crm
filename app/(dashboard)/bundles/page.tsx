@@ -12,5 +12,5 @@ import { BundlesView } from "@/components/bundles/BundlesView";
 export default async function BundlesPage() {
   const user = await requirePageUser();
 
-  return <BundlesView facets={await getBundleFacets()} isAdmin={isAdmin(user)} />;
+  return <BundlesView facets={await getBundleFacets()} isAdmin={isAdmin(user)} currentUserId={user.id} />;
 }

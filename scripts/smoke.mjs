@@ -402,6 +402,103 @@ async function main() {
     Number.isFinite(before) && during === before + 1 && after === before,
     `${before} → ${during} → ${after} (expected ${before} → ${before + 1} → ${before})`,
   );
+
+  // 10. Create and edit API (stage 4). The bundle created here is deleted again at
+  // the end of the block, so a smoke run leaves the seeded dataset as it was.
+  const sample = all?.items?.[0];
+  const newBundle = {
+    name: `Smoke bundle ${Date.now()}`,
+    offerId: sample?.offer.id,
+    angle: "Temporary bundle created by the smoke run",
+    creative: "",
+    geoIds: [sample?.geos[0]?.id],
+    status: "TESTING",
+    budgetPlanned: 400,
+    budgetSpent: 200,
+    revenue: 300,
+    clicks: 5000,
+    conversions: 25,
+    notes: "",
+    tagIds: [],
+  };
+
+  const anonCreate = await request("/api/bundles", { method: "POST", body: newBundle });
+  check("POST /api/bundles requires a session", anonCreate.status === 401, `status ${anonCreate.status}`);
+
+  const bundleCreate = await request("/api/bundles", { method: "POST", jar: buyer, body: newBundle });
+  const bundleDraft = bundleCreate.json?.data;
+  check(
+    "a buyer creates a bundle they own, with derived metrics",
+    bundleCreate.status === 200 &&
+      bundleDraft?.buyer?.id === mineItems[0]?.buyer?.id &&
+      bundleDraft?.roi === 50 &&
+      bundleDraft?.cr === 0.5,
+    `status ${bundleCreate.status}, roi ${bundleDraft?.roi}, cr ${bundleDraft?.cr}`,
+  );
+
+  const badCreate = await request("/api/bundles", {
+    method: "POST",
+    jar: buyer,
+    body: { ...newBundle, clicks: 2, conversions: 10 },
+  });
+  check(
+    "create rejects conversions above clicks",
+    badCreate.status === 422 && Boolean(badCreate.json?.error?.fields?.conversions),
+    `status ${badCreate.status}`,
+  );
+
+  const updated = await request(`/api/bundles/${bundleDraft?.id}`, {
+    method: "PUT",
+    jar: buyer,
+    body: { budgetSpent: 500, revenue: 800 },
+  });
+  check(
+    "a partial update recomputes metrics and leaves the rest intact",
+    updated.status === 200 &&
+      updated.json?.data?.roi === 60 &&
+      updated.json?.data?.profit === 300 &&
+      updated.json?.data?.clicks === 5000 &&
+      updated.json?.data?.conversions === 25 &&
+      updated.json?.data?.status === "TESTING",
+    `status ${updated.status}, roi ${updated.json?.data?.roi}, clicks ${updated.json?.data?.clicks}, status ${updated.json?.data?.status}`,
+  );
+
+  const emptyPatch = await request(`/api/bundles/${bundleDraft?.id}`, { method: "PUT", jar: buyer, body: {} });
+  check("an empty patch is rejected", emptyPatch.status === 422, `status ${emptyPatch.status}`);
+
+  const foreignUpdate = await request(`/api/bundles/${foreign?.id}`, { method: "PUT", jar: buyer, body: { name: "hijacked" } });
+  check("a buyer cannot edit someone else's bundle", foreignUpdate.status === 403, `status ${foreignUpdate.status}`);
+
+  const otherBuyer = (afterDenied.json?.data?.items ?? []).find((item) => item.buyer.id !== mineItems[0]?.buyer?.id);
+  const reassign = await request(`/api/bundles/${bundleDraft?.id}`, {
+    method: "PUT",
+    jar: buyer,
+    body: { userId: otherBuyer?.buyer.id },
+  });
+  check("a buyer cannot reassign a bundle", reassign.status === 403, `status ${reassign.status}`);
+
+  const adminReassign = await request(`/api/bundles/${bundleDraft?.id}`, {
+    method: "PUT",
+    jar,
+    body: { userId: otherBuyer?.buyer.id },
+  });
+  check(
+    "an admin can reassign a bundle",
+    adminReassign.status === 200 && adminReassign.json?.data?.buyer?.id === otherBuyer?.buyer.id,
+    `status ${adminReassign.status}`,
+  );
+
+  const removed = await request("/api/bundles/bulk", {
+    method: "POST",
+    jar,
+    body: { action: "delete", ids: [bundleDraft?.id] },
+  });
+  const goneList = await request(`/api/bundles?search=${encodeURIComponent(newBundle.name)}`, { jar });
+  check(
+    "the smoke bundle is deleted again",
+    removed.json?.data?.affected === 1 && goneList.json?.data?.total === 0,
+    `affected ${removed.json?.data?.affected}, left ${goneList.json?.data?.total}`,
+  );
 }
 
 main()

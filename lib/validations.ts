@@ -30,6 +30,12 @@ export type RegisterForm = z.infer<typeof registerSchema>;
 const money = z.coerce.number().min(0, "Cannot be negative").max(100_000_000, "Too large");
 const counter = z.coerce.number().int("Whole numbers only").min(0).max(10_000_000_000);
 
+/**
+ * Shared field definitions WITHOUT defaults. This matters: `.partial()` keeps a
+ * field's `.default()`, so a partial built from a defaulted object turns `{}` into
+ * a full payload and a PUT that meant to change one column would silently write
+ * zeroes into the rest. Defaults live only on the create schema below.
+ */
 const bundleFields = z.object({
   name: z.string().trim().min(3, "At least 3 characters").max(120, "At most 120 characters"),
   offerId: id,
@@ -37,20 +43,30 @@ const bundleFields = z.object({
   creative: z.union([z.url("Enter a valid URL"), z.literal("")]).optional(),
   geoIds: z.array(id).min(1, "Pick at least one GEO"),
   userId: id.optional(),
-  status: bundleStatusSchema.default("IDEA"),
-  budgetPlanned: money.default(0),
-  budgetSpent: money.default(0),
-  revenue: money.default(0),
-  clicks: counter.default(0),
-  conversions: counter.default(0),
+  status: bundleStatusSchema,
+  budgetPlanned: money,
+  budgetSpent: money,
+  revenue: money,
+  clicks: counter,
+  conversions: counter,
   notes: z.string().trim().max(5000, "At most 5000 characters").optional(),
-  tagIds: z.array(id).default([]),
+  tagIds: z.array(id),
 });
 
-export const bundleSchema = bundleFields.refine((value) => value.conversions <= value.clicks, {
-  message: "Conversions cannot exceed clicks",
-  path: ["conversions"],
-});
+export const bundleSchema = bundleFields
+  .extend({
+    status: bundleStatusSchema.default("IDEA"),
+    budgetPlanned: money.default(0),
+    budgetSpent: money.default(0),
+    revenue: money.default(0),
+    clicks: counter.default(0),
+    conversions: counter.default(0),
+    tagIds: z.array(id).default([]),
+  })
+  .refine((value) => value.conversions <= value.clicks, {
+    message: "Conversions cannot exceed clicks",
+    path: ["conversions"],
+  });
 export type BundleForm = z.infer<typeof bundleSchema>;
 
 /** PUT payload: every field is optional, at least one must be present. */

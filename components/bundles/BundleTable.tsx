@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { createColumnHelper, tableFeatures, useTable, type Row } from "@tanstack/react-table";
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -130,6 +131,8 @@ export function BundleTable({
   selectedIds,
   onToggleRow,
   onToggleAll,
+  onEdit,
+  canManage,
 }: {
   rows: BundleListItem[];
   state: QueryState;
@@ -137,8 +140,35 @@ export function BundleTable({
   selectedIds: string[];
   onToggleRow: (id: string, next: boolean) => void;
   onToggleAll: (next: boolean) => void;
+  onEdit: (row: BundleListItem) => void;
+  canManage: (row: BundleListItem) => boolean;
 }) {
-  const table = useTable({ features, columns, data: rows, getRowId: (row) => row.id });
+  const actionsColumn = useMemo(
+    () =>
+      helper.display({
+        id: "actions",
+        header: "",
+        cell: (info) => {
+          const row = info.row.original;
+          if (!canManage(row)) return null;
+          return (
+            <Button type="button" size="xs" variant="ghost" onClick={() => onEdit(row)}>
+              Edit
+            </Button>
+          );
+        },
+        // Width via a class: `size` only applies when columnSizingFeature is on.
+        meta: { label: "", className: "w-16" } satisfies ColumnMeta,
+      }),
+    [onEdit, canManage],
+  );
+
+  const table = useTable({
+    features,
+    columns: [...columns, actionsColumn],
+    data: rows,
+    getRowId: (row) => row.id,
+  });
 
   const { sort, order } = readSort(state);
   const allSelected = rows.length > 0 && selectedIds.length === rows.length;
@@ -240,6 +270,7 @@ export function BundleTable({
             row={row}
             selected={selectedIds.includes(row.id)}
             onToggle={(next) => onToggleRow(row.id, next)}
+            onEdit={canManage(row.original) ? () => onEdit(row.original) : undefined}
           />
         ))}
       </div>
@@ -251,10 +282,12 @@ function BundleCard({
   row,
   selected,
   onToggle,
+  onEdit,
 }: {
   row: Row<typeof features, BundleListItem>;
   selected: boolean;
   onToggle: (next: boolean) => void;
+  onEdit?: () => void;
 }) {
   const bundle = row.original;
 
@@ -292,6 +325,13 @@ function BundleCard({
           </div>
         ))}
       </dl>
+      {onEdit && (
+        <div className="pt-1">
+          <Button type="button" size="sm" variant="outline" onClick={onEdit}>
+            Edit
+          </Button>
+        </div>
+      )}
     </article>
   );
 }

@@ -98,9 +98,20 @@ CSRF, credentials-логин, роль и id в сессии, доступнос
 | `POST` | `/api/auth/register` | регистрация (всегда роль `USER`) |
 | `GET/POST` | `/api/auth/[...nextauth]` | NextAuth: csrf, callback, session |
 | `GET` | `/api/bundles` | список: `search`, `status` (csv), `offerId`, `userId`, `mine`, `geoId`, `tagId`, `roiMin`, `roiMax`, `dateFrom`, `dateTo`, `sort`, `order`, `page`, `pageSize`, `archived` |
+| `POST` | `/api/bundles` | создание связки |
+| `PUT` | `/api/bundles/[id]` | частичное обновление: присылаются только изменённые поля, на каждое пишется запись в историю |
 | `GET` | `/api/bundles/export` | тот же фильтр, CSV-файл вместо страницы |
 | `POST` | `/api/bundles/bulk` | массово: `status` \| `archive` \| `unarchive` \| `delete` |
 | `PATCH` | `/api/bundles/[id]/status` | смена статуса одной связки |
+
+Форма создания/редактирования — модалка на React Hook Form + той же Zod-схеме, что и на сервере;
+CR, ROI, ROAS и прибыль считаются на лету по мере ввода чисел. Байер создаёт связку всегда на
+себя, переназначить байера и удалить чужую связку может только админ.
+
+Про `PUT` и Zod: `.partial()` в zod 4 **сохраняет `.default()`** поля. Если собирать partial из схемы
+с дефолтами, то `{}` пройдёт валидацию и превратится в полный payload — PUT, который хотел поменять
+одну колонку, молча обнулил бы остальные. Поэтому общие поля объявлены без дефолтов, дефолты
+добавляются только в create-схему через `.extend()`, а partial строится на чистых полях.
 
 `sort` принимает только белый список колонок. `roi`, `cr` и `profit` — производные, их нельзя
 ни отсортировать, ни отфильтровать через `orderBy` в Prisma, поэтому для таких запросов
@@ -148,6 +159,21 @@ scope из пререндеров и prefetch — кэш был бы, эффек
 Проверка: в `npm run smoke` есть кейс «cached dashboard is invalidated by a status change»
 (8 → 9 → 8), а отсутствие инсайтов подтверждено реальным рендером — навигация `/ → /bundles → /`
 в headless Edge через CDP (оверлей живёт в shadow DOM, его текст читается сквозь `shadowRoot`).
+
+Один шум в логе остаётся и он не наш:
+
+```
+DeprecationWarning: Calling client.query() when the client is already executing a query
+is deprecated and will be removed in pg@9.0.
+```
+
+Стек (`@prisma/client/runtime/client.js → interpretNode → performIO → pg/lib/client.js`) показывает,
+что запросы вразнолад на одном соединении отправляет сам движок Prisma с pg-адаптером, а не код
+приложения — там все вызовы последовательные. На корректность сегодня не влияет (Postgres
+исполняет сообщения соединения по порядку), но на мажоре `pg@9` сломается, поэтому `pg`
+закреплён на 8.x и при апгрейде это проверять первым. Попытка убрать его через интерактивную
+`$transaction` не помогла — транзакция оставлена по другой причине: запись и её история теперь
+фиксируются атомарно.
 
 ## Как устроена защита
 
@@ -209,7 +235,7 @@ components/
   auth/                             LoginForm, RegisterForm, AuthShell, SignOutButton, DemoAccounts
   layout/                           Sidebar, Header, NavList, MobileMenu (Sheet), MobileNav, UserMenu, BrandMark, ThemeToggle, nav-items
   dashboard/                        StatsCard, ProfitChart, StatusPieChart, TopBundlesWidget
-  bundles/                          BundlesView, BundleTable (+карточки, пагинация, скелетон), BundleFilters, BulkActionsBar, BundleStatusBadge
+  bundles/                          BundlesView, BundleTable (+карточки, пагинация, скелетон), BundleFilters, BulkActionsBar, BundleStatusBadge, BundleForm, BundleDialog
   providers.tsx                     React Query + Toaster
   StagePlaceholder.tsx              общий вид заглушки этапа
 lib/
@@ -241,7 +267,7 @@ types/next-auth.d.ts                расширение типов сессии
 - [x] **Этап 2.** Layout (сайдбар, хедер, мобильная навигация и drawer) и главная страница с виджетами
 - [x] **Этап 3.** Список связок: API, фильтры, сортировка, пагинация, массовые действия, CSV
 - [x] **Тематический проход.** Семантические токены, светлая и тёмная темы, переключатель System/Light/Dark, системный шрифт, палитра графиков по теме
-- [ ] **Этап 4.** Форма создания/редактирования (модалка, оптимистичные обновления)
+- [x] **Этап 4.** Форма создания/редактирования (модалка, оптимистичные обновления)
 - [ ] **Этап 5.** Детальная страница: timeline изменений + комментарии
 - [ ] **Этап 6.** Аналитика (графики по байерам/офферам) и справочники в настройках
 - [ ] **Этап 7.** Экспорт/импорт CSV, уведомления, audit log, Docker-деплой

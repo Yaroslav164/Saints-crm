@@ -2,8 +2,9 @@ import { cacheLife, cacheTag, revalidateTag } from "next/cache";
 import { prisma } from "@/lib/db";
 import { canManageBundle, isAdmin, type CurrentUser } from "@/lib/dal";
 import { forbidden, notFound } from "@/lib/http";
+import { STATUS_META } from "@/lib/status";
 import { calculateCR, calculateProfit, calculateROI, roundTo } from "@/lib/utils";
-import type { BulkBundleForm, BundleQuery } from "@/lib/validations";
+import type { BundleForm, BundleUpdateForm, BulkBundleForm, BundleQuery } from "@/lib/validations";
 import type { BundleFacets, BundleListItem, BundlesResponse, Option } from "@/types";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import type { BundleStatus } from "@/lib/generated/prisma/enums";
@@ -35,6 +36,7 @@ const listSelect = {
   revenue: true,
   clicks: true,
   conversions: true,
+  notes: true,
   isArchived: true,
   createdAt: true,
   updatedAt: true,
@@ -62,6 +64,7 @@ export function toBundleListItem(row: BundleRow): BundleListItem {
     revenue: row.revenue,
     clicks: row.clicks,
     conversions: row.conversions,
+    notes: row.notes,
     isArchived: row.isArchived,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -223,16 +226,18 @@ async function loadFacets(): Promise<BundleFacets> {
   cacheTag("facets");
   cacheLife("minutes");
 
-  const [offers, buyers, geos] = await Promise.all([
+  const [offers, buyers, geos, tags] = await Promise.all([
     prisma.offer.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.user.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, select: { id: true, name: true } }),
     prisma.geo.findMany({ orderBy: { code: "asc" }, select: { id: true, code: true, name: true } }),
+    prisma.tag.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, color: true } }),
   ]);
 
   return {
     offers: offers.map(option),
     buyers: buyers.map(option),
     geos: geos.map((geo) => ({ id: geo.id, label: geo.code })),
+    tags: tags.map((tag) => ({ id: tag.id, label: tag.name, color: tag.color })),
   };
 }
 
@@ -342,4 +347,123 @@ export async function setBundleStatus(user: CurrentUser, id: string, status: Bun
 
   await applyBulkBundles(user, { action: "status", ids: [row.id], status });
   return { id: row.id, status };
+}
+
+/**
+ * Fields the edit form can change, with the human-readable rendering used in the
+ * change log. The timeline on the bundle page (stage 5) shows these strings, so
+ * an id here would be useless to a reader — relations are logged by name.
+ */
+const LOGGED_FIELDS = [
+  { label: "name", show: (item: BundleListItem) => item.name },
+  { label: "status", show: (item: BundleListItem) => STATUS_META[item.status].label },
+  { label: "offer", show: (item: BundleListItem) => item.offer.label },
+  { label: "buyer", show: (item: BundleListItem) => item.buyer.label },
+  { label: "angle", show: (item: BundleListItem) => item.angle },
+  { label: "creative", show: (item: BundleListItem) => item.creative ?? "" },
+  { label: "GEO", show: (item: BundleListItem) => item.geos.map((geo) => geo.label).join(", ") },
+  { label: "tags", show: (item: BundleListItem) => item.tags.map((tag) => tag.label).join(", ") },
+  { label: "budget planned", show: (item: BundleListItem) => String(item.budgetPlanned) },
+  { label: "spent", show: (item: BundleListItem) => String(item.budgetSpent) },
+  { label: "revenue", show: (item: BundleListItem) => String(item.revenue) },
+  { label: "clicks", show: (item: BundleListItem) => String(item.clicks) },
+  { label: "conversions", show: (item: BundleListItem) => String(item.conversions) },
+  { label: "notes", show: (item: BundleListItem) => item.notes ?? "" },
+] as const;
+
+function diffBundle(before: BundleListItem, after: BundleListItem) {
+  return LOGGED_FIELDS.flatMap((field) => {
+    const oldValue = field.show(before);
+    const newValue = field.show(after);
+    return oldValue === newValue ? [] : [{ field: field.label, oldValue, newValue }];
+  });
+}
+
+/** Creates a bundle. A buyer always owns their own row; only an admin may assign one. */
+export async function createBundle(user: CurrentUser, data: BundleForm): Promise<BundleListItem> {
+  const userId = data.userId && isAdmin(user) ? data.userId : user.id;
+
+  // Interactive transaction so the row and its "created" history entry commit
+  // together. It does NOT silence the pg "already executing a query"
+  // deprecation — that comes from inside the Prisma engine's own plan
+  // interpreter (client.js → performIO → pg Client.query), not from here.
+  const created = await prisma.$transaction(async (tx) => {
+    const bundle = await tx.bundle.create({
+      data: {
+        name: data.name,
+        offerId: data.offerId,
+        angle: data.angle,
+        creative: data.creative || null,
+        status: data.status,
+        budgetPlanned: data.budgetPlanned,
+        budgetSpent: data.budgetSpent,
+        revenue: data.revenue,
+        clicks: data.clicks,
+        conversions: data.conversions,
+        notes: data.notes || null,
+        userId,
+        geos: { connect: data.geoIds.map((geoId) => ({ id: geoId })) },
+        tags: { connect: data.tagIds.map((tagId) => ({ id: tagId })) },
+      },
+      select: listSelect,
+    });
+
+    await tx.bundleChange.create({
+      data: { bundleId: bundle.id, userId: user.id, field: "bundle", oldValue: null, newValue: "created" },
+    });
+
+    return bundle;
+  });
+
+  revalidateTag("dashboard", { expire: 0 });
+  return toBundleListItem(created);
+}
+
+/** Updates a bundle and writes one BundleChange per modified field. */
+export async function updateBundle(user: CurrentUser, id: string, patch: BundleUpdateForm): Promise<BundleListItem> {
+  const before = await prisma.bundle.findUnique({ where: { id }, select: listSelect });
+  if (!before) throw notFound("Bundle not found");
+  if (!canManageBundle(user, { userId: before.user.id })) {
+    throw forbidden("Only the owner or an admin can edit this bundle");
+  }
+  if (patch.userId && patch.userId !== before.user.id && !isAdmin(user)) {
+    throw forbidden("Only an admin can reassign a bundle");
+  }
+
+  // One transaction so the update and its per-field history cannot be split by a
+  // failure in between.
+  const updated = await prisma.$transaction(async (tx) => {
+    const row = await tx.bundle.update({
+      where: { id },
+      data: {
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.offerId !== undefined ? { offerId: patch.offerId } : {}),
+        ...(patch.angle !== undefined ? { angle: patch.angle } : {}),
+        ...(patch.creative !== undefined ? { creative: patch.creative || null } : {}),
+        ...(patch.status !== undefined ? { status: patch.status } : {}),
+        ...(patch.budgetPlanned !== undefined ? { budgetPlanned: patch.budgetPlanned } : {}),
+        ...(patch.budgetSpent !== undefined ? { budgetSpent: patch.budgetSpent } : {}),
+        ...(patch.revenue !== undefined ? { revenue: patch.revenue } : {}),
+        ...(patch.clicks !== undefined ? { clicks: patch.clicks } : {}),
+        ...(patch.conversions !== undefined ? { conversions: patch.conversions } : {}),
+        ...(patch.notes !== undefined ? { notes: patch.notes || null } : {}),
+        ...(patch.userId !== undefined ? { userId: patch.userId } : {}),
+        ...(patch.geoIds !== undefined ? { geos: { set: patch.geoIds.map((geoId) => ({ id: geoId })) } } : {}),
+        ...(patch.tagIds !== undefined ? { tags: { set: patch.tagIds.map((tagId) => ({ id: tagId })) } } : {}),
+      },
+      select: listSelect,
+    });
+
+    const changes = diffBundle(toBundleListItem(before), toBundleListItem(row));
+    if (changes.length > 0) {
+      await tx.bundleChange.createMany({
+        data: changes.map((change) => ({ ...change, bundleId: id, userId: user.id, createdAt: new Date() })),
+      });
+    }
+
+    return row;
+  });
+
+  revalidateTag("dashboard", { expire: 0 });
+  return toBundleListItem(updated);
 }

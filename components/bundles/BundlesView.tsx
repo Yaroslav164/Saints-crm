@@ -5,11 +5,12 @@ import { useSearchParams } from "next/navigation";
 import { DownloadIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BulkActionsBar } from "@/components/bundles/BulkActionsBar";
+import { BundleDialog } from "@/components/bundles/BundleDialog";
 import { BundleFilters } from "@/components/bundles/BundleFilters";
 import { BundleTable, EmptyState, TablePagination, TableSkeleton } from "@/components/bundles/BundleTable";
 import { toQuery } from "@/lib/api-client";
-import { useBundlesQuery, withParams, type QueryState } from "@/hooks/useBundles";
-import type { BundleFacets } from "@/types";
+import { useBundlesQuery, type QueryState } from "@/hooks/useBundles";
+import type { BundleFacets, BundleListItem } from "@/types";
 
 /** Only these reach the query; anything else in the URL is ignored. */
 const FILTER_KEYS = [
@@ -47,12 +48,27 @@ function readUrl(params: URLSearchParams): QueryState {
  * stay shareable and survive a refresh. The query string is read here instead of
  * being awaited by the page, so a navigation never blocks on it server-side.
  */
-export function BundlesView({ facets, isAdmin }: { facets: BundleFacets; isAdmin: boolean }) {
+export function BundlesView({
+  facets,
+  isAdmin,
+  currentUserId,
+}: {
+  facets: BundleFacets;
+  isAdmin: boolean;
+  currentUserId: string;
+}) {
   const searchParams = useSearchParams();
   const [state, setState] = useState<QueryState>(() => readUrl(searchParams));
   const [selected, setSelected] = useState<string[]>([]);
   const [formKey, setFormKey] = useState(0);
+  // `?new=1` from the dashboard quick action opens the create dialog on arrival.
+  const [dialog, setDialog] = useState<{ open: boolean; bundle: BundleListItem | null }>({
+    open: Boolean(searchParams.get("new")),
+    bundle: null,
+  });
   const query = useBundlesQuery(state);
+
+  const canManage = (row: BundleListItem) => isAdmin || row.buyer.id === currentUserId;
 
   const update = (next: QueryState) => {
     setState(next);
@@ -92,7 +108,7 @@ export function BundlesView({ facets, isAdmin }: { facets: BundleFacets; isAdmin
               Export CSV
             </a>
           </Button>
-          <Button type="button" size="sm" onClick={() => update(withParams(state, { new: "1" }))}>
+          <Button type="button" size="sm" onClick={() => setDialog({ open: true, bundle: null })}>
             <PlusIcon />
             New bundle
           </Button>
@@ -126,6 +142,8 @@ export function BundlesView({ facets, isAdmin }: { facets: BundleFacets; isAdmin
             selectedIds={selected}
             onToggleRow={toggleRow}
             onToggleAll={toggleAll}
+            onEdit={(row) => setDialog({ open: true, bundle: row })}
+            canManage={canManage}
           />
           <TablePagination
             state={state}
@@ -140,6 +158,21 @@ export function BundlesView({ facets, isAdmin }: { facets: BundleFacets; isAdmin
       {query.isFetching && !query.isPending && (
         <p className="text-xs text-muted-foreground">Refreshing…</p>
       )}
+
+      <BundleDialog
+        facets={facets}
+        isAdmin={isAdmin}
+        bundle={dialog.bundle}
+        open={dialog.open}
+        onOpenChange={(open) => {
+          setDialog((current) => ({ ...current, open }));
+          // The dialog can arrive as ?new=1 from the dashboard; rewriting the URL
+          // from the current state drops that marker so a reload does not reopen it.
+          if (!open && window.location.search.includes("new=")) {
+            window.history.replaceState(null, "", `/bundles${toQuery(state)}`);
+          }
+        }}
+      />
     </div>
   );
 }
