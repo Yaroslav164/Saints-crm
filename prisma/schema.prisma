@@ -1,0 +1,196 @@
+// Prisma schema — AFF SAINTS CRM (bundle/test tracking for an affiliate team).
+// The datasource URL is not declared here: Prisma 7 reads it from
+// prisma7.config.ts, which loads DATABASE_URL from the environment.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum BundleStatus {
+  IDEA // 💡 Idea
+  TESTING // 🧪 Testing
+  PROFIT // ✅ In profit
+  LOSS // ⚠️ In loss
+  DRAINED // 🗑 Drained
+  SCALE // 🚀 Scaling
+
+  @@map("bundle_status")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(USER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  bundles       Bundle[]        @relation("BundleOwner")
+  changes       BundleChange[]
+  comments      Comment[]
+  notifications Notification[]
+
+  @@map("users")
+}
+
+model Offer {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  url        String?
+  // Standard payout for the offer, used as a reference when judging a bundle's ROI.
+  payoutUSD  Float    @default(0)
+  network    String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  bundles Bundle[]
+
+  @@map("offers")
+}
+
+model Geo {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+
+  bundles Bundle[]
+
+  @@map("geos")
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String   @default("#6366f1")
+  createdAt DateTime @default(now())
+
+  bundles Bundle[]
+
+  @@map("tags")
+}
+
+model Bundle {
+  id            String       @id @default(cuid())
+  name          String
+  offerId       String
+  angle         String
+  creative      String?
+  userId        String
+  status        BundleStatus @default(IDEA)
+  budgetPlanned Float        @default(0)
+  budgetSpent   Float        @default(0)
+  revenue       Float        @default(0)
+  clicks        Int          @default(0)
+  conversions   Int          @default(0)
+  notes         String?
+  isArchived    Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  offer       Offer          @relation(fields: [offerId], references: [id])
+  user        User           @relation("BundleOwner", fields: [userId], references: [id])
+  geos        Geo[]
+  tags        Tag[]
+  changes     BundleChange[]
+  comments    Comment[]
+  metrics     BundleMetric[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([userId])
+  @@index([offerId])
+  @@index([isArchived])
+  @@index([createdAt])
+  @@map("bundles")
+}
+
+// Daily spend/revenue snapshots. Totals on Bundle stay authoritative for the
+// form, while these rows make the "profit by day" analytics possible.
+// `date` is a DATE, not a timestamp: every analytics query groups by day, and a
+// time component would make each row its own group.
+model BundleMetric {
+  id          String   @id @default(cuid())
+  bundleId    String
+  date        DateTime @db.Date
+  spent       Float    @default(0)
+  revenue     Float    @default(0)
+  clicks      Int      @default(0)
+  conversions Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  bundle Bundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@unique([bundleId, date])
+  @@index([date])
+  @@map("bundle_metrics")
+}
+
+model BundleChange {
+  id         String   @id @default(cuid())
+  bundleId   String
+  userId     String
+  field      String
+  oldValue   String?
+  newValue   String?
+  createdAt  DateTime @default(now())
+
+  bundle Bundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([bundleId])
+  @@index([createdAt])
+  @@map("bundle_changes")
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  bundleId  String
+  userId    String
+  text      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  bundle Bundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([bundleId])
+  @@map("comments")
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  bundleId  String?
+  type      String
+  message   String
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bundle Bundle? @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+// Simple key/value store for team-wide settings such as the ROI alert threshold.
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
