@@ -1,6 +1,4 @@
-import { cache } from "react";
 import { redirect } from "next/navigation";
-import { connection } from "next/server";
 import { auth } from "@/lib/auth";
 import { ApiError } from "@/lib/http";
 import type { Role } from "@/lib/generated/prisma/enums";
@@ -12,20 +10,8 @@ export type CurrentUser = {
   role: Role;
 };
 
-/**
- * Data access layer entry point. `cache` dedupes the session read across every
- * component of one request; it is still a request-time read, so callers that
- * render it must sit behind a Suspense boundary (a `loading.tsx` is enough).
- *
- * `connection()` is load-bearing, not decoration: when the cookie is missing or
- * fails to decode, Auth.js builds its own signin redirect with
- * `crypto.getRandomValues()`. Inside a Partial Prerender segment Next rejects
- * that as an unstable value (docs message `blocking-prerender-crypto`) and the
- * dynamic part errors instead of redirecting. Marking the scope request-time
- * first removes that restriction.
- */
-export const getSessionUser = cache(async (): Promise<CurrentUser | null> => {
-  await connection();
+/** Plain request-time session read — used by route handlers. */
+async function readSessionUser(): Promise<CurrentUser | null> {
   const session = await auth();
   if (!session?.user?.id) return null;
   return {
@@ -34,18 +20,33 @@ export const getSessionUser = cache(async (): Promise<CurrentUser | null> => {
     email: session.user.email ?? "",
     role: session.user.role,
   };
-});
+}
+
+/**
+ * Page-facing session read. `'use cache: private'` keeps the result in the
+ * visitor's browser only, never on the server, which is what lets Next prefetch
+ * the authenticated shell: without it every client-side navigation blocks on this
+ * read and the dev overlay reports "uncached data during a navigation".
+ *
+ * `redirect()` inside the scope throws to interrupt rendering rather than return,
+ * so it is not cached. Route handlers deliberately use `readSessionUser` instead:
+ * a private cache entry has no browser to live in there.
+ */
+export async function getSessionUser(): Promise<CurrentUser | null> {
+  "use cache: private";
+  return readSessionUser();
+}
 
 /** For pages: sends anonymous visitors to the sign-in screen. */
 export async function requirePageUser(): Promise<CurrentUser> {
   const user = await getSessionUser();
-  if (!user) redirect("/login");
+  if (!user) redirect("/auth/login");
   return user;
 }
 
 /** For route handlers: a 401 the client can react to instead of a redirect. */
 export async function requireApiUser(): Promise<CurrentUser> {
-  const user = await getSessionUser();
+  const user = await readSessionUser();
   if (!user) throw new ApiError(401, "Sign in required");
   return user;
 }

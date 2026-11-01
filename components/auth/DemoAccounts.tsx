@@ -10,7 +10,7 @@ const ACCOUNTS = [
 /** Seed accounts (prisma/seed.ts) so the demo can be opened without typing. */
 export function DemoAccounts() {
   return (
-    <Card className="rounded-xl border-slate-800 bg-slate-900/60 p-4">
+    <Card className="bg-muted/40 p-4">
       <p className="text-xs font-medium text-muted-foreground">
         Demo accounts — password <span className="font-mono text-foreground">saints2026</span>
       </p>

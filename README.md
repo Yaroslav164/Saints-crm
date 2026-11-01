@@ -77,13 +77,77 @@ npx next start -p 3111
 npm run smoke
 ```
 
-30 проверок: редирект анонима (307) и редирект с исходным путём (`?from=%2Fbundles`), отсутствие
+50 проверок: редирект анонима (307) и редирект с исходным путём (`?from=%2Fbundles`), отсутствие
 утечки данных при фальшивой cookie и при этом честный редирект в потоке, маппинг
 `/login → /auth/login`, страницы входа и регистрации, создание/дубликат/валидация аккаунта,
 CSRF, credentials-логин, роль и id в сессии, доступность формы входа при наличии cookie,
-неверный пароль, публичная регистрация, а также наличие в разметке дашборда оболочки,
-четырёх виджетов, обоих графиков, сериализованного дневного ряда (30 точек) и реальных
-связок в топ-5.
+неверный пароль, публичная регистрация; разметка дашборда (оболочка, четыре виджета, оба
+графика, сериализованный дневной ряд из 30 точек, реальные связки в топ-5); API связок —
+401 без сессии, страница, фильтр по статусу, поиск, пагинация, сортировка по производному ROI,
+диапазон ROI, отсечение несуществующей страницы, 422 на неверное значение, CSV с нужными
+заголовками и права (чужая связка не меняется, удаление только у админа, своя связка меняется
+и возвращается обратно).
+
+## API
+
+Все эндпоинты требуют сессию (кроме `POST /api/auth/register`), отвечают `{ data }` или
+`{ error: { message, fields } }` и проверяют права через `lib/dal.ts`.
+
+| Метод | Путь | Назначение |
+| ----- | ---- | ---------- |
+| `POST` | `/api/auth/register` | регистрация (всегда роль `USER`) |
+| `GET/POST` | `/api/auth/[...nextauth]` | NextAuth: csrf, callback, session |
+| `GET` | `/api/bundles` | список: `search`, `status` (csv), `offerId`, `userId`, `mine`, `geoId`, `tagId`, `roiMin`, `roiMax`, `dateFrom`, `dateTo`, `sort`, `order`, `page`, `pageSize`, `archived` |
+| `GET` | `/api/bundles/export` | тот же фильтр, CSV-файл вместо страницы |
+| `POST` | `/api/bundles/bulk` | массово: `status` \| `archive` \| `unarchive` \| `delete` |
+| `PATCH` | `/api/bundles/[id]/status` | смена статуса одной связки |
+
+`sort` принимает только белый список колонок. `roi`, `cr` и `profit` — производные, их нельзя
+ни отсортировать, ни отфильтровать через `orderBy` в Prisma, поэтому для таких запросов
+сначала читаются лёгкие строки (только числа), считаются в `lib/bundles.ts`, и только
+получившаяся страница поднимается вместе со связями. Окно скана ограничено
+(`DERIVED_SCAN_LIMIT`), и при переполнении в ответе приходит `truncated: true` — экран
+показывает это предупреждение вместо молча неверного порядка.
+
+## Темы
+
+Тёмная — по умолчанию (по ТЗ), светлая тоже полноценная, переключатель **System / Light / Dark**
+в хедере. Реализация без `next-themes`:
+
+- палитра живёт в семантических токенах (`bg-card`, `border-border`, `text-muted-foreground`,
+  `text-success`, `text-destructive`, `--sidebar-*`), компоненты цвет не задают — иначе новая
+  тема в них не подхватится;
+- исключение намеренное: `lib/status.ts` держит оттенки статусов явно (цвет несёт смысл),
+  но для каждого задана светлая и тёмная пара;
+- выбор хранится в `localStorage`, а `lib/theme-storage.ts` встраивается в `<head>` инлайн-скриптом
+  и ставит класс на `<html>` **до первой отрисовки** — мигания при загрузке нет;
+- шрифт системный (SF Pro / Segoe UI Variable), веб-шрифтов нет — первый кадр не ждёт font-запрос;
+- **цвета графиков задаются в JS** (`lib/chart-theme.ts` по `useResolvedTheme()`), потому что
+  Recharts пишет их в SVG-атрибуты `fill`/`stroke`, куда `var(--token)` не подставляется.
+
+Готовность проверяется скриншотами обеих тем на реальных страницах: смоук ходит в API, но
+не видит рендер, а авторизованную страницу headless-браузер получает только через CDP
+(`Network.setCookie` с сессией + `Page.captureScreenshot`).
+
+## Кэш и мгновенная навигация
+
+Под `cacheComponents` Next в дев-оверлее помечает **«uncached data during a navigation»** — это не
+ошибка, а сигнал: переход по ссылке не может быть мгновенным, потому что страница ждёт
+не-кэшированные данные. Против каждого случая — своё средство, а не «use cache везде»:
+
+| Что | Почему так |
+| --- | --- |
+| Чтение сессии (`getSessionUser`) | `'use cache: private'` — значение живёт **только в браузере**, на сервер не пишется; именно это даёт Next prefetchить авторизованный шелл. Для route handler'ов есть отдельный `readSessionUser()` без приватного кэша — там записи держать некому |
+| Справочники фильтров (`getBundleFacets`) | `use cache` + `cacheTag('facets')` + `cacheLife('minutes')`: меняются редко, тег инвалидирует CRUD настроек на этапе 6 |
+| Агрегаты дашборда (`getDashboardData`) | то же под тегом `dashboard`, и **любая** запись в `lib/bundles.ts` вызывает `revalidateTag('dashboard', { expire: 0 })` — иначе после массовой смены статусов цифры на главной остались бы старыми |
+| `searchParams` страницы `/bundles` | на сервере не читается вообще: состоянием фильтра владеет клиент, а серверный `await` только блокировал навигацию |
+
+Тонкость с `cacheLife`: пресет `'seconds'` даёт `stale = 1 s`, а при `stale < 30 s` Next исключает
+scope из пререндеров и prefetch — кэш был бы, эффекта нет. Поэтому везде `'minutes'`.
+
+Проверка: в `npm run smoke` есть кейс «cached dashboard is invalidated by a status change»
+(8 → 9 → 8), а отсутствие инсайтов подтверждено реальным рендером — навигация `/ → /bundles → /`
+в headless Edge через CDP (оверлей живёт в shadow DOM, его текст читается сквозь `shadowRoot`).
 
 ## Как устроена защита
 
@@ -128,31 +192,42 @@ CSRF, credentials-логин, роль и id в сессии, доступнос
 app/
   api/auth/[...nextauth]/route.ts   NextAuth (GET/POST, connection() первой строкой)
   api/auth/register/route.ts        регистрация
+  api/bundles/route.ts              список с фильтрами/сортировкой/пагинацией
+  api/bundles/export/route.ts       CSV тех же фильтров
+  api/bundles/bulk/route.ts         массовые действия
+  api/bundles/[id]/status/route.ts  смена статуса одной связки
   auth/login, auth/register         страницы входа и регистрации (без оболочки)
   (dashboard)/
     layout.tsx                      оболочка: Sidebar + Header + MobileNav, каждый в своём <Suspense>
     loading.tsx                     скелетон сегмента (он же даёт границу для чтения сессии)
     page.tsx                        дашборд с виджетами
-    bundles/ analytics/ settings/   заглушки этапов 3 и 6
-  layout.tsx                        шрифты, тёмная тема, провайдеры
+    bundles/page.tsx                список связок (сервер читает фильтры из URL и словари)
+    analytics/ settings/            заглушки этапа 6
+  layout.tsx                        скрипт темы до первой отрисовки, провайдеры
 components/
   ui/                               примитивы shadcn/ui
   auth/                             LoginForm, RegisterForm, AuthShell, SignOutButton, DemoAccounts
-  layout/                           Sidebar, Header, NavList, MobileMenu (Sheet), MobileNav, UserMenu, BrandMark, nav-items
+  layout/                           Sidebar, Header, NavList, MobileMenu (Sheet), MobileNav, UserMenu, BrandMark, ThemeToggle, nav-items
   dashboard/                        StatsCard, ProfitChart, StatusPieChart, TopBundlesWidget
-  bundles/BundleStatusBadge.tsx     цвет статуса (используют и виджет, и будущая таблица)
+  bundles/                          BundlesView, BundleTable (+карточки, пагинация, скелетон), BundleFilters, BulkActionsBar, BundleStatusBadge
   providers.tsx                     React Query + Toaster
   StagePlaceholder.tsx              общий вид заглушки этапа
 lib/
   auth.ts                           NextAuth: credentials + JWT-клаймы id/role
   dal.ts                            слой доступа к данным (сессия + права)
+  bundles.ts                        запросы списка, CSV-строки, массовые операции + лог изменений
   dashboard.ts                      агрегаты главной (groupBy по статусам/дням/неделе)
   db.ts                             PrismaClient через pg-адаптер
-  http.ts                           ApiError, toResponse, CSV-хелперы
+  http.ts                           ApiError, toResponse, errorResponse, CSV-хелперы
   api-client.ts                     типизированный fetch для клиентских хуков
-  validations.ts                    Zod-схемы всех форм и фильтров
+  validations.ts                    Zod-схемы всех форм, фильтров и bulk-операций
+  theme.ts / theme-storage.ts       клиентский store темы + скрипт до первой отрисовки
+  chart-theme.ts                    палитры графиков по темам (JS-значения, не CSS-переменные)
   utils.ts / status.ts              расчёты CR/ROI/ROAS, форматирование дат и денег, цвета статусов
-hooks/useSignOut.ts                 общий выход из сессии (меню пользователя + кнопка)
+hooks/
+  useBundles.ts                     запросы списка и мутации, состояние фильтра = URL
+  useSignOut.ts                     общий выход из сессии (меню пользователя + кнопка)
+types/index.ts                      DTO списка, facets, bulk-ответа
 prisma/
   schema.prisma, seed.ts, migrations/
 proxy.ts
@@ -164,7 +239,8 @@ types/next-auth.d.ts                расширение типов сессии
 
 - [x] **Этап 1.** Проект, зависимости, схема БД + миграции + сид, NextAuth, роли, страницы входа/регистрации, smoke-тест
 - [x] **Этап 2.** Layout (сайдбар, хедер, мобильная навигация и drawer) и главная страница с виджетами
-- [ ] **Этап 3.** Список связок: API, фильтры, сортировка, пагинация, массовые действия
+- [x] **Этап 3.** Список связок: API, фильтры, сортировка, пагинация, массовые действия, CSV
+- [x] **Тематический проход.** Семантические токены, светлая и тёмная темы, переключатель System/Light/Dark, системный шрифт, палитра графиков по теме
 - [ ] **Этап 4.** Форма создания/редактирования (модалка, оптимистичные обновления)
 - [ ] **Этап 5.** Детальная страница: timeline изменений + комментарии
 - [ ] **Этап 6.** Аналитика (графики по байерам/офферам) и справочники в настройках

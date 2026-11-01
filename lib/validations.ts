@@ -112,38 +112,62 @@ export const settingsSchema = z.object({
  * List query for /api/bundles. Filters arrive as URL search params, so numbers
  * are coerced and multi-values accept a comma-separated list.
  */
-const csvList = z
+const csvStrings = z
   .string()
-  .optional()
-  .transform((value) =>
-    value ? value.split(",").map((item) => item.trim()).filter(Boolean) : undefined,
-  );
+  .transform((value) => value.split(",").map((item) => item.trim()).filter(Boolean));
+
+const csvEnum = <T extends readonly [string, ...string[]]>(values: T) =>
+  csvStrings.pipe(z.array(z.enum(values)));
+
+const booleanParam = z
+  .string()
+  .transform((value) => value === "true" || value === "1")
+  .optional();
+
+/** Whitelist: anything outside it must never reach Prisma's orderBy. */
+export const bundleSortValues = [
+  "name",
+  "status",
+  "offer",
+  "buyer",
+  "budgetPlanned",
+  "budgetSpent",
+  "revenue",
+  "clicks",
+  "conversions",
+  "cr",
+  "roi",
+  "profit",
+  "createdAt",
+  "updatedAt",
+] as const;
 
 export const bundleQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().trim().max(120).optional(),
-  status: csvList,
-  offerId: z.string().trim().optional(),
-  userId: z.string().trim().optional(),
-  geoId: z.string().trim().optional(),
-  tagId: z.string().trim().optional(),
+  status: csvEnum(bundleStatusValues).optional(),
+  offerId: z.string().trim().min(1).optional(),
+  userId: z.string().trim().min(1).optional(),
+  /** `mine=1` keeps "my active tests" shareable without embedding an internal id. */
+  mine: booleanParam,
+  geoId: z.string().trim().min(1).optional(),
+  tagId: z.string().trim().min(1).optional(),
   roiMin: z.coerce.number().optional(),
   roiMax: z.coerce.number().optional(),
   dateFrom: z.coerce.date().optional(),
   dateTo: z.coerce.date().optional(),
-  sort: z
-    .string()
-    .trim()
-    .transform((value) => (value === "roi" || value === "cr" ? value : undefined))
-    .optional(),
+  sort: z.enum(bundleSortValues).default("createdAt"),
   order: z.enum(["asc", "desc"]).default("desc"),
-  archived: z
-    .string()
-    .optional()
-    .transform((value) => value === "true"),
+  archived: booleanParam,
 });
 export type BundleQuery = z.infer<typeof bundleQuerySchema>;
+
+export const bulkBundleSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("status"), ids: z.array(id).min(1).max(200), status: bundleStatusSchema }),
+  z.object({ action: z.enum(["archive", "unarchive", "delete"]), ids: z.array(id).min(1).max(200) }),
+]);
+export type BulkBundleForm = z.infer<typeof bulkBundleSchema>;
 
 /** Flattens a ZodError into `field → first message` for form UIs. */
 export function fieldErrors(error: z.ZodError): Record<string, string> {

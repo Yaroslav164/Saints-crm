@@ -1,17 +1,16 @@
-import { StagePlaceholder } from "@/components/StagePlaceholder";
+import { getBundleFacets } from "@/lib/bundles";
+import { isAdmin, requirePageUser } from "@/lib/dal";
+import { BundlesView } from "@/components/bundles/BundlesView";
 
-export default function BundlesPage() {
-  return (
-    <StagePlaceholder
-      title="Bundles"
-      description="The bundle list is the main working screen of the CRM."
-      stage="stage 3"
-      items={[
-        "TanStack Table with every column from the spec (offer, angle, GEO, buyer, status, budget, spend, revenue, ROI, profit, dates)",
-        "Filters by status, offer, buyer, GEO, ROI range and creation date, plus search",
-        "Sorting on every column, 20-per-page pagination, bulk status change and delete",
-        "Card layout instead of a table on phones, CSV export",
-      ]}
-    />
-  );
+/**
+ * This page deliberately does not read `searchParams`. The list's filters, sort
+ * and page live in the URL and the client owns them, so awaiting the params here
+ * made every navigation block on a request-time value — Next reports exactly that
+ * as "uncached data during a navigation". The client reads the same query string
+ * (including during SSR), so nothing is lost.
+ */
+export default async function BundlesPage() {
+  const user = await requirePageUser();
+
+  return <BundlesView facets={await getBundleFacets()} isAdmin={isAdmin(user)} />;
 }

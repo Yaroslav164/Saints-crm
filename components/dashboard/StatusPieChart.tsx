@@ -1,13 +1,19 @@
 "use client";
 
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
+import { CHART_THEMES } from "@/lib/chart-theme";
+import { useResolvedTheme } from "@/lib/theme";
 import type { StatusSlice } from "@/lib/dashboard";
 
 /**
  * Distribution of active (non-archived) bundles by status. Colours come from
- * STATUS_META so the pie, the badges and the table agree on one meaning.
+ * STATUS_META so the pie, the badges and the table agree on one meaning, and the
+ * theme is read in JavaScript because Recharts writes these values into SVG
+ * presentation attributes, where a CSS variable would not resolve.
  */
 export function StatusPieChart({ data, height = 260 }: { data: StatusSlice[]; height?: number }) {
+  const theme = useResolvedTheme();
+  const palette = CHART_THEMES[theme];
   const total = data.reduce((sum, slice) => sum + slice.count, 0);
 
   return (
@@ -17,12 +23,12 @@ export function StatusPieChart({ data, height = 260 }: { data: StatusSlice[]; he
           <PieChart>
             <Tooltip
               contentStyle={{
-                background: "#0f172a",
-                border: "1px solid #334155",
-                borderRadius: 8,
+                background: palette.tooltip.background,
+                border: `1px solid ${palette.tooltip.border}`,
+                borderRadius: 12,
                 fontSize: 12,
               }}
-              itemStyle={{ color: "#e2e8f0" }}
+              itemStyle={{ color: palette.tooltip.text }}
               formatter={(value, name) => [`${value} bundles`, name]}
             />
             <Pie
@@ -37,7 +43,7 @@ export function StatusPieChart({ data, height = 260 }: { data: StatusSlice[]; he
               isAnimationActive={false}
             >
               {data.map((slice) => (
-                <Cell key={slice.status} fill={slice.color} stroke="#020617" strokeWidth={2} />
+                <Cell key={slice.status} fill={slice.color[theme]} stroke={palette.canvas} strokeWidth={2} />
               ))}
             </Pie>
           </PieChart>
@@ -47,7 +53,11 @@ export function StatusPieChart({ data, height = 260 }: { data: StatusSlice[]; he
       <ul className="grid flex-1 gap-1.5 text-sm">
         {data.map((slice) => (
           <li key={slice.status} className="flex items-center gap-2">
-            <span className="size-2.5 shrink-0 rounded-full" style={{ background: slice.color }} />
+            <span
+              className="size-2.5 shrink-0 rounded-full"
+              style={{ background: slice.color[theme] }}
+              aria-hidden
+            />
             <span className="truncate text-muted-foreground">
               {slice.emoji} {slice.label}
             </span>

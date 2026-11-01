@@ -43,7 +43,7 @@ export function UserMenu({ user }: { user: CurrentUser }) {
         <DropdownMenuLabel className="flex flex-col gap-1">
           <span className="truncate font-medium">{user.name}</span>
           <span className="truncate text-xs font-normal text-muted-foreground">{user.email}</span>
-          <Badge variant="outline" className="mt-1 w-fit border-indigo-500/40 bg-indigo-500/15 text-indigo-300">
+          <Badge variant="outline" className="mt-1 w-fit border-primary/30 bg-primary/10 text-primary">
             {user.role}
           </Badge>
         </DropdownMenuLabel>

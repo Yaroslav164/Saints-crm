@@ -26,7 +26,7 @@ export function AuthShell({
           </div>
         </div>
 
-        <Card className="gap-4 rounded-xl border-slate-800 bg-slate-900 p-5 shadow-lg shadow-black/20">
+        <Card className="gap-4 p-5 shadow-sm">
           <div className="space-y-1">
             <h1 className="text-lg font-semibold text-foreground">{title}</h1>
             <p className="text-sm text-muted-foreground">{subtitle}</p>

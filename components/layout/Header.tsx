@@ -1,9 +1,10 @@
 import { BrandMark } from "./BrandMark";
 import { MobileMenu } from "./MobileMenu";
+import { ThemeToggle } from "./ThemeToggle";
 import { UserMenu } from "./UserMenu";
 import { requirePageUser } from "@/lib/dal";
 
-/** Top bar: drawer trigger + brand below the sidebar breakpoint, account menu on the right. */
+/** Top bar: drawer trigger + brand below the sidebar breakpoint, theme and account on the right. */
 export async function Header() {
   const user = await requirePageUser();
 
@@ -14,6 +15,7 @@ export async function Header() {
         <BrandMark compact />
       </div>
       <div className="ml-auto flex items-center gap-2">
+        <ThemeToggle />
         <UserMenu user={user} />
       </div>
     </header>

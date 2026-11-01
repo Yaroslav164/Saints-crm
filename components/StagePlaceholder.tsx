@@ -18,7 +18,7 @@ export function StagePlaceholder({
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
 
-      <Card className="rounded-xl border-slate-800 bg-slate-900">
+      <Card className="shadow-sm">
         <CardHeader className="px-4 pt-4 pb-2">
           <CardTitle className="text-sm">Planned for {stage}</CardTitle>
           <CardDescription className="text-xs">

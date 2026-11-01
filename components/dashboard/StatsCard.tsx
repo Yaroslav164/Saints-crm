@@ -4,9 +4,9 @@ import { cn } from "@/lib/utils";
 type Tone = "neutral" | "positive" | "negative";
 
 const TONE_CLASS: Record<Tone, string> = {
-  neutral: "text-foreground",
-  positive: "text-emerald-400",
-  negative: "text-red-400",
+  neutral: "text-card-foreground",
+  positive: "text-success",
+  negative: "text-destructive",
 };
 
 export function StatsCard({
@@ -25,10 +25,10 @@ export function StatsCard({
   className?: string;
 }) {
   return (
-    <Card className={cn("rounded-xl border-slate-800 bg-slate-900 shadow-sm", className)}>
+    <Card className={cn("shadow-sm", className)}>
       <CardContent className="flex items-start justify-between gap-3 px-4 py-3.5">
         <div className="min-w-0 space-y-1">
-          <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</p>
+          <p className="text-xs font-medium text-muted-foreground">{title}</p>
           <p className={cn("text-2xl leading-tight font-semibold tabular-nums", TONE_CLASS[tone])}>{value}</p>
           {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
         </div>

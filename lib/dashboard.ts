@@ -1,3 +1,4 @@
+import { cacheLife, cacheTag } from "next/cache";
 import { prisma } from "@/lib/db";
 import { STATUS_META, STATUS_ORDER } from "@/lib/status";
 import { calculateProfit, calculateROI, formatDayKey, formatDayLabel, roundTo } from "@/lib/utils";
@@ -12,7 +13,14 @@ function utcDayStart(daysAgo: number): Date {
   return new Date(date.getTime() - daysAgo * DAY_MS);
 }
 
-export type StatusSlice = { status: BundleStatus; label: string; emoji: string; color: string; count: number };
+export type StatusSlice = {
+  status: BundleStatus;
+  label: string;
+  emoji: string;
+  /** Literal colors per theme: Recharts cannot resolve CSS variables in SVG. */
+  color: { light: string; dark: string };
+  count: number;
+};
 export type DayPoint = { day: string; label: string; revenue: number; spent: number; profit: number };
 export type TopBundle = {
   id: string;
@@ -41,6 +49,20 @@ export type DashboardData = {
  * numbers on this page are team-wide sums over the daily metric rows.
  */
 export async function getDashboardData(userId: string, windowDays = 30): Promise<DashboardData> {
+  return loadDashboard(userId, windowDays);
+}
+
+/**
+ * Cached under the `dashboard` tag for a minute — enough for the shell to be
+ * prefetched and for back-navigation to feel instant — while the bundle mutation
+ * routes expire that tag immediately, so the cards never show a number from
+ * before the change the user just made.
+ */
+async function loadDashboard(userId: string, windowDays: number): Promise<DashboardData> {
+  "use cache";
+  cacheTag("dashboard");
+  cacheLife("minutes");
+
   const fromWindow = utcDayStart(windowDays - 1);
   const fromWeek = utcDayStart(6);
 

@@ -39,7 +39,7 @@ export default async function DashboardPage() {
             </Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link href="/bundles?status=TESTING&amp;userId=me">
+            <Link href="/bundles?status=TESTING&amp;mine=1">
               <FlaskConicalIcon />
               My active tests ({data.myTesting})
             </Link>
@@ -78,7 +78,7 @@ export default async function DashboardPage() {
       </section>
 
       <section className="grid gap-4 lg:grid-cols-3">
-        <Card className="rounded-xl border-slate-800 bg-slate-900 lg:col-span-2">
+        <Card className="shadow-sm lg:col-span-2">
           <CardHeader className="px-4 pt-4 pb-0">
             <CardTitle className="text-sm">Profit by day</CardTitle>
             <CardDescription className="text-xs">
@@ -90,7 +90,7 @@ export default async function DashboardPage() {
           </CardContent>
         </Card>
 
-        <Card className="rounded-xl border-slate-800 bg-slate-900">
+        <Card className="shadow-sm">
           <CardHeader className="px-4 pt-4 pb-0">
             <CardTitle className="text-sm">Bundles by status</CardTitle>
             <CardDescription className="text-xs">Active bundles (archived excluded).</CardDescription>
@@ -104,20 +104,20 @@ export default async function DashboardPage() {
       <section className="grid gap-4 lg:grid-cols-3">
         <TopBundlesWidget bundles={data.topBundles} className="lg:col-span-2" />
 
-        <Card className="rounded-xl border-slate-800 bg-slate-900">
+        <Card className="shadow-sm">
           <CardHeader className="px-4 pt-4 pb-0">
             <CardTitle className="text-sm">Month totals</CardTitle>
             <CardDescription className="text-xs">Team-wide, last {data.windowDays} days.</CardDescription>
           </CardHeader>
           <CardContent className="px-4 pb-4">
-            <dl className="divide-y divide-slate-800 text-sm">
+            <dl className="divide-y divide-border text-sm">
               {[
                 { label: "Revenue", value: formatCurrency(data.totals.revenue) },
                 { label: "Spent", value: formatCurrency(data.totals.spent) },
                 {
                   label: "Profit",
                   value: formatCurrency(data.totals.profit),
-                  className: profitTone === "positive" ? "text-emerald-400" : profitTone === "negative" ? "text-red-400" : undefined,
+                  className: profitTone === "positive" ? "text-success" : profitTone === "negative" ? "text-destructive" : undefined,
                 },
                 { label: "ROI", value: formatPercent(data.totals.roi) },
                 { label: "My active tests", value: String(data.myTesting) },

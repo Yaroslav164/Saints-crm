@@ -21,6 +21,37 @@ export const conflict = (message = "Already exists", fields?: Record<string, str
   new ApiError(409, message, fields);
 
 /**
+ * Maps a thrown value to the `{ error: { message, fields } }` envelope. Split out
+ * of `toResponse` because the CSV route returns a non-JSON body and therefore
+ * cannot use the wrapper, but must answer errors identically.
+ */
+export function errorResponse(error: unknown): Response {
+  if (error instanceof ApiError) {
+    return Response.json({ error: { message: error.message, fields: error.fields } }, { status: error.status });
+  }
+  if (error instanceof ZodError) {
+    return Response.json(
+      { error: { message: "Validation failed", fields: fieldErrors(error) } },
+      { status: 422 },
+    );
+  }
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2002") {
+      const target = (error.meta?.target as string[] | undefined)?.join(", ") ?? "value";
+      return Response.json({ error: { message: `${target} must be unique` } }, { status: 409 });
+    }
+    if (error.code === "P2003" || error.code === "P2014") {
+      return Response.json({ error: { message: "Related record is still in use" } }, { status: 400 });
+    }
+    if (error.code === "P2025") {
+      return Response.json({ error: { message: "Record not found" } }, { status: 404 });
+    }
+  }
+  console.error("[api]", error);
+  return Response.json({ error: { message: "Something went wrong" } }, { status: 500 });
+}
+
+/**
  * Single exit point for every route handler: wraps the payload in `{ data }`,
  * turns thrown errors into `{ error: { message, fields } }` and keeps Prisma
  * specifics (unique/FK/not-found) out of the client.
@@ -29,29 +60,7 @@ export async function toResponse<T>(action: () => Promise<T>): Promise<Response>
   try {
     return Response.json({ data: await action() });
   } catch (error) {
-    if (error instanceof ApiError) {
-      return Response.json({ error: { message: error.message, fields: error.fields } }, { status: error.status });
-    }
-    if (error instanceof ZodError) {
-      return Response.json(
-        { error: { message: "Validation failed", fields: fieldErrors(error) } },
-        { status: 422 },
-      );
-    }
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      if (error.code === "P2002") {
-        const target = (error.meta?.target as string[] | undefined)?.join(", ") ?? "value";
-        return Response.json({ error: { message: `${target} must be unique` } }, { status: 409 });
-      }
-      if (error.code === "P2003" || error.code === "P2014") {
-        return Response.json({ error: { message: "Related record is still in use" } }, { status: 400 });
-      }
-      if (error.code === "P2025") {
-        return Response.json({ error: { message: "Record not found" } }, { status: 404 });
-      }
-    }
-    console.error("[api]", error);
-    return Response.json({ error: { message: "Something went wrong" } }, { status: 500 });
+    return errorResponse(error);
   }
 }
 

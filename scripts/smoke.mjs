@@ -51,6 +51,8 @@ async function request(path, { method = "GET", jar, body, form, follow = false }
   return {
     status: response.status,
     location: response.headers.get("location"),
+    contentType: response.headers.get("content-type"),
+    disposition: response.headers.get("content-disposition"),
     text,
     json: (() => {
       try {
@@ -60,6 +62,19 @@ async function request(path, { method = "GET", jar, body, form, follow = false }
       }
     })(),
   };
+}
+
+/** Signs in through the same REST flow a browser uses and returns a cookie jar.
+ * Named `signInSession` because `login` is taken by a local variable in main(). */
+async function signInSession(email, password) {
+  const session = createJar();
+  const csrf = await request("/api/auth/csrf", { jar: session });
+  await request("/api/auth/callback/credentials", {
+    method: "POST",
+    jar: session,
+    form: { csrfToken: csrf.json?.csrfToken ?? "", email, password, json: "true" },
+  });
+  return session;
 }
 
 async function main() {
@@ -183,7 +198,9 @@ async function main() {
   // React splits "Planned for {stage}" into two text nodes with a <!-- --> marker,
   // so match on the single-node fragments instead of the full phrase.
   for (const [path, needles] of [
-    ["/bundles", ["Bundles", "stage 3", "TanStack Table"]],
+    // The list screen is real since stage 3: its server shell carries the filter
+    // bar and the loading state, while the rows arrive over the API.
+    ["/bundles", ["Bundles", "Export CSV", "New bundle", "Loading bundles", "Search by name"]],
     ["/analytics", ["Analytics", "stage 6", "Profit by buyer"]],
     ["/settings", ["Settings", "stage 6", "Offers CRUD"]],
   ]) {
@@ -224,6 +241,167 @@ async function main() {
     body: { name: "Smoke Public", email: publicEmail, password: "saints2026" },
   });
   check("Registration endpoint works without a session", anonApi.status === 200, `status ${anonApi.status}`);
+
+  // 7. Bundle list API: filters, sorting (including the derived columns),
+  // pagination, validation and the CSV export.
+  const anonList = await request("/api/bundles");
+  check(
+    "GET /api/bundles without a session is answered with 401 JSON",
+    anonList.status === 401 && Boolean(anonList.json?.error?.message),
+    `status ${anonList.status}, content-type ${anonList.contentType}`,
+  );
+
+  const list = await request("/api/bundles", { jar });
+  const all = list.json?.data;
+  check(
+    "GET /api/bundles returns the seeded page",
+    list.status === 200 && all?.items?.length === 20 && all.total === 20 && all.pageCount === 1,
+    `status ${list.status}, total ${all?.total}`,
+  );
+
+  const statusFiltered = await request("/api/bundles?status=PROFIT", { jar });
+  const statusSet = new Set((statusFiltered.json?.data?.items ?? []).map((item) => item.status));
+  check(
+    "status filter narrows to one status",
+    statusFiltered.json?.data?.total === 5 && statusSet.size === 1 && statusSet.has("PROFIT"),
+    `total ${statusFiltered.json?.data?.total}`,
+  );
+
+  const searched = await request("/api/bundles?search=crypto", { jar });
+  const searchedItems = searched.json?.data?.items ?? [];
+  check(
+    "search matches the name case-insensitively",
+    searchedItems.length > 0 && searchedItems.every((item) => item.name.toLowerCase().includes("crypto")),
+    `${searchedItems.length} rows`,
+  );
+
+  const secondPage = await request("/api/bundles?pageSize=5&page=2", { jar });
+  check(
+    "pagination slices the same total",
+    secondPage.json?.data?.items?.length === 5 && secondPage.json?.data?.total === 20 && secondPage.json?.data?.pageCount === 4,
+    `pageCount ${secondPage.json?.data?.pageCount}`,
+  );
+
+  const roiSorted = await request("/api/bundles?sort=roi&order=desc&pageSize=100", { jar });
+  const rois = (roiSorted.json?.data?.items ?? []).map((item) => item.roi);
+  check(
+    "sorting by the derived ROI is applied server-side",
+    rois.length === 20 && rois.every((value, index) => index === 0 || rois[index - 1] >= value),
+    `top ${rois[0]}%, bottom ${rois.at(-1)}%`,
+  );
+
+  const band = await request("/api/bundles?roiMin=0&pageSize=100", { jar });
+  const bandItems = band.json?.data?.items ?? [];
+  check("the ROI band filter keeps only profitable bundles", bandItems.length > 0 && bandItems.every((item) => item.roi >= 0), `${bandItems.length} of 20`);
+
+  const badFilter = await request("/api/bundles?status=NOT_A_STATUS", { jar });
+  check("an unknown status value is rejected", badFilter.status === 422, `status ${badFilter.status}`);
+
+  const stalePage = await request("/api/bundles?page=99", { jar });
+  check(
+    "a page past the end is clamped instead of returning an empty list",
+    stalePage.json?.data?.page === 1 && stalePage.json?.data?.items?.length === 20,
+    `page ${stalePage.json?.data?.page}, ${stalePage.json?.data?.items?.length} rows`,
+  );
+
+  const csv = await request("/api/bundles/export?pageSize=100", { jar });
+  const csvLines = csv.text.trim().split(/\r?\n/);
+  check(
+    "CSV export downloads every matching row as a file",
+    csv.status === 200 &&
+      csv.contentType?.startsWith("text/csv") &&
+      csv.disposition?.includes("attachment") &&
+      csvLines.length === 21 &&
+      csvLines[0].includes("ROI %"),
+    `${csvLines.length} lines, ${csv.contentType}`,
+  );
+  check("CSV export requires a session", (await request("/api/bundles/export")).status === 401, "");
+
+  // 8. Ownership. A buyer sees the whole team list but may only change their own rows.
+  const buyer = await signInSession("ivanov@saints.com", "saints2026");
+  const mineItems = (await request("/api/bundles?mine=1&pageSize=100", { jar: buyer })).json?.data?.items ?? [];
+  const ownId = mineItems[0]?.id;
+  const foreign = (all?.items ?? []).find((item) => item.buyer.id !== mineItems[0]?.buyer?.id);
+  check(
+    "mine=1 returns only the signed-in buyer's bundles",
+    mineItems.length > 0 && mineItems.every((item) => item.buyer.id === mineItems[0].buyer.id),
+    `${mineItems.length} of ${all?.total}`,
+  );
+  check("there is a foreign bundle to test the denial on", Boolean(foreign) && Boolean(ownId), foreign?.name ?? "none");
+
+  const denied = await request("/api/bundles/bulk", {
+    method: "POST",
+    jar: buyer,
+    body: { action: "status", ids: [foreign?.id], status: "SCALE" },
+  });
+  check(
+    "a bulk change touching only foreign bundles reports skipped",
+    denied.status === 200 && denied.json?.data?.affected === 0 && denied.json?.data?.skipped === 1,
+    JSON.stringify(denied.json?.data ?? denied.json?.error),
+  );
+
+  const afterDenied = await request("/api/bundles?pageSize=100", { jar });
+  const foreignRow = (afterDenied.json?.data?.items ?? []).find((item) => item.id === foreign?.id);
+  check("the foreign bundle kept its status", foreignRow?.status === foreign?.status, foreignRow?.status ?? "missing");
+
+  const forbiddenDelete = await request("/api/bundles/bulk", {
+    method: "POST",
+    jar: buyer,
+    body: { action: "delete", ids: [ownId] },
+  });
+  check("only an admin may delete bundles", forbiddenDelete.status === 403, `status ${forbiddenDelete.status}`);
+
+  // Round trip on the buyer's own row, reverted afterwards so the demo data stays as seeded.
+  const own = mineItems.find((item) => item.status === "TESTING") ?? mineItems[0];
+  const nextStatus = own.status === "TESTING" ? "LOSS" : "TESTING";
+  const changed = await request("/api/bundles/bulk", {
+    method: "POST",
+    jar: buyer,
+    body: { action: "status", ids: [own.id], status: nextStatus },
+  });
+  const afterChange = (await request("/api/bundles?pageSize=100", { jar })).json?.data?.items?.find((item) => item.id === own.id);
+  const reverted = await request("/api/bundles/bulk", {
+    method: "POST",
+    jar: buyer,
+    body: { action: "status", ids: [own.id], status: own.status },
+  });
+  check(
+    "a bulk status change applies to your own bundle and reverts",
+    changed.json?.data?.affected === 1 && afterChange?.status === nextStatus && reverted.json?.data?.affected === 1,
+    `${changed.json?.data?.affected} → ${afterChange?.status} → ${reverted.json?.data?.affected}`,
+  );
+
+  const single = await request(`/api/bundles/${own.id}/status`, { method: "PATCH", jar: buyer, body: { status: "PROFIT" } });
+  const singleRevert = await request(`/api/bundles/${own.id}/status`, { method: "PATCH", jar: buyer, body: { status: own.status } });
+  check(
+    "PATCH /api/bundles/[id]/status works for the owner",
+    single.status === 200 && single.json?.data?.status === "PROFIT" && singleRevert.status === 200,
+    `status ${single.status}`,
+  );
+
+  const anonBulk = await request("/api/bundles/bulk", { method: "POST", body: { action: "archive", ids: [ownId] } });
+  check("the bulk endpoint requires a session", anonBulk.status === 401, `status ${anonBulk.status}`);
+
+  const badBulk = await request("/api/bundles/bulk", { method: "POST", jar, body: { action: "nonsense", ids: [] } });
+  check("an unknown bulk action is rejected", badBulk.status === 422, `status ${badBulk.status}`);
+
+  // 9. The dashboard aggregates are cached (`use cache` + cacheLife), so prove the
+  // invalidation works: a status change must be reflected on the very next load.
+  const testingCount = (html) => {
+    const match = /In testing[\s\S]{0,220}?>(\d+)</.exec(html);
+    return match ? Number.parseInt(match[1], 10) : NaN;
+  };
+  const before = testingCount((await request("/", { jar })).text);
+  const idea = (await request("/api/bundles?status=IDEA&pageSize=1", { jar })).json?.data?.items?.[0];
+  await request("/api/bundles/bulk", { method: "POST", jar, body: { action: "status", ids: [idea?.id], status: "TESTING" } });
+  const during = testingCount((await request("/", { jar })).text);
+  await request("/api/bundles/bulk", { method: "POST", jar, body: { action: "status", ids: [idea?.id], status: "IDEA" } });
+  const after = testingCount((await request("/", { jar })).text);
+  check(
+    "cached dashboard is invalidated by a status change",
+    Number.isFinite(before) && during === before + 1 && after === before,
+    `${before} → ${during} → ${after} (expected ${before} → ${before + 1} → ${before})`,
+  );
 }
 
 main()

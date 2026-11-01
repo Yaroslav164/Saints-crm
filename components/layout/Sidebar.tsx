@@ -36,7 +36,7 @@ export async function Sidebar() {
               <p className="truncate text-sm font-medium leading-tight">{user.name}</p>
               <p className="truncate text-xs leading-tight text-muted-foreground">{user.email}</p>
             </div>
-            <Badge variant="outline" className="ml-auto border-indigo-500/40 bg-indigo-500/15 text-indigo-300">
+            <Badge variant="outline" className="ml-auto border-primary/30 bg-primary/10 text-primary">
               {user.role === "ADMIN" ? "Admin" : "Buyer"}
             </Badge>
           </div>
