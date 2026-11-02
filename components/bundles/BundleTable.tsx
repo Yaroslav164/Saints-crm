@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import Link from "next/link";
 import { createColumnHelper, tableFeatures, useTable, type Row } from "@tanstack/react-table";
 import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -43,7 +44,12 @@ const columns = helper.columns([
     header: "Bundle",
     cell: (info) => (
       <div className="min-w-0">
-        <p className="truncate font-medium">{info.row.original.name}</p>
+        <Link
+          href={`/bundles/${info.row.original.id}`}
+          className="block truncate font-medium underline-offset-4 transition-colors hover:text-foreground hover:underline"
+        >
+          {info.row.original.name}
+        </Link>
         <p className="truncate text-xs text-muted-foreground">{info.row.original.angle}</p>
       </div>
     ),
@@ -305,7 +311,9 @@ function BundleCard({
           aria-label={`Select ${bundle.name}`}
         />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{bundle.name}</p>
+          <Link href={`/bundles/${bundle.id}`} className="block truncate text-sm font-medium hover:underline">
+            {bundle.name}
+          </Link>
           <p className="truncate text-xs text-muted-foreground">
             {bundle.offer.label} · {bundle.buyer.label} · {bundle.geos.map((geo) => geo.label).join(", ")}
           </p>

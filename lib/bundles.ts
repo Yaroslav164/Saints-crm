@@ -2,10 +2,10 @@ import { cacheLife, cacheTag, revalidateTag } from "next/cache";
 import { prisma } from "@/lib/db";
 import { canManageBundle, isAdmin, type CurrentUser } from "@/lib/dal";
 import { forbidden, notFound } from "@/lib/http";
-import { STATUS_META } from "@/lib/status";
-import { calculateCR, calculateProfit, calculateROI, roundTo } from "@/lib/utils";
+import { calculateCR, calculateProfit, calculateROI, roundTo, formatDayKey, formatDayLabel } from "@/lib/utils";
 import type { BundleForm, BundleUpdateForm, BulkBundleForm, BundleQuery } from "@/lib/validations";
-import type { BundleFacets, BundleListItem, BundlesResponse, Option } from "@/types";
+import type { BundleActivityEntry, BundleDetail, BundleFacets, BundleListItem, BundlesResponse, CreatedComment, Option } from "@/types";
+import type { DayPoint } from "@/lib/dashboard";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import type { BundleStatus } from "@/lib/generated/prisma/enums";
 
@@ -350,21 +350,22 @@ export async function setBundleStatus(user: CurrentUser, id: string, status: Bun
 }
 
 /**
- * Fields the edit form can change, with the human-readable rendering used in the
- * change log. The timeline on the bundle page (stage 5) shows these strings, so
- * an id here would be useless to a reader — relations are logged by name.
+ * Fields the edit form can change, keyed by the machine name written to
+ * `BundleChange.field`. The keys are shared with the seed and the bulk action, and
+ * `lib/timeline.ts` owns the words they turn into — including values logged by name
+ * instead of id, because a timeline reading "offer: clo_1a2b" tells nobody anything.
  */
 const LOGGED_FIELDS = [
   { label: "name", show: (item: BundleListItem) => item.name },
-  { label: "status", show: (item: BundleListItem) => STATUS_META[item.status].label },
+  { label: "status", show: (item: BundleListItem) => item.status },
   { label: "offer", show: (item: BundleListItem) => item.offer.label },
   { label: "buyer", show: (item: BundleListItem) => item.buyer.label },
   { label: "angle", show: (item: BundleListItem) => item.angle },
   { label: "creative", show: (item: BundleListItem) => item.creative ?? "" },
-  { label: "GEO", show: (item: BundleListItem) => item.geos.map((geo) => geo.label).join(", ") },
+  { label: "geos", show: (item: BundleListItem) => item.geos.map((geo) => geo.label).join(", ") },
   { label: "tags", show: (item: BundleListItem) => item.tags.map((tag) => tag.label).join(", ") },
-  { label: "budget planned", show: (item: BundleListItem) => String(item.budgetPlanned) },
-  { label: "spent", show: (item: BundleListItem) => String(item.budgetSpent) },
+  { label: "budgetPlanned", show: (item: BundleListItem) => String(item.budgetPlanned) },
+  { label: "budgetSpent", show: (item: BundleListItem) => String(item.budgetSpent) },
   { label: "revenue", show: (item: BundleListItem) => String(item.revenue) },
   { label: "clicks", show: (item: BundleListItem) => String(item.clicks) },
   { label: "conversions", show: (item: BundleListItem) => String(item.conversions) },
@@ -466,4 +467,146 @@ export async function updateBundle(user: CurrentUser, id: string, patch: BundleU
 
   revalidateTag("dashboard", { expire: 0 });
   return toBundleListItem(updated);
+}
+
+/** Daily rows are read newest-last and capped, so a long-lived bundle stays a readable chart. */
+const DAILY_WINDOW_DAYS = 30;
+
+const detailSelect = {
+  ...listSelect,
+  changes: {
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      field: true,
+      oldValue: true,
+      newValue: true,
+      createdAt: true,
+      user: { select: { id: true, name: true } },
+    },
+  },
+  comments: {
+    orderBy: { createdAt: "asc" },
+    select: {
+      id: true,
+      text: true,
+      createdAt: true,
+      user: { select: { id: true, name: true } },
+    },
+  },
+  metrics: {
+    orderBy: { date: "asc" },
+    select: { date: true, spent: true, revenue: true },
+  },
+} satisfies Prisma.BundleSelect;
+
+type BundleDetailRow = Prisma.BundleGetPayload<{ select: typeof detailSelect }>;
+
+/**
+ * The feed interleaves the two tables the page reads: one entry per logged field
+ * change and one per comment, oldest first. Comments are not written into
+ * `BundleChange` as well — a row in one place cannot drift out of sync with the
+ * thread it came from.
+ */
+function buildActivity(row: BundleDetailRow): BundleActivityEntry[] {
+  const changes: BundleActivityEntry[] = row.changes.map((change) => ({
+    id: change.id,
+    kind: "change",
+    at: change.createdAt.toISOString(),
+    actor: { id: change.user.id, label: change.user.name },
+    field: change.field,
+    oldValue: change.oldValue,
+    newValue: change.newValue,
+    text: null,
+  }));
+
+  const comments: BundleActivityEntry[] = row.comments.map((comment) => ({
+    id: comment.id,
+    kind: "comment",
+    at: comment.createdAt.toISOString(),
+    actor: { id: comment.user.id, label: comment.user.name },
+    field: null,
+    oldValue: null,
+    newValue: null,
+    text: comment.text,
+  }));
+
+  return [...changes, ...comments].sort((a, b) => a.at.localeCompare(b.at));
+}
+
+function toDayPoint(row: { date: Date; spent: number; revenue: number }): DayPoint {
+  const spent = roundTo(row.spent);
+  const revenue = roundTo(row.revenue);
+  return {
+    day: formatDayKey(row.date),
+    label: formatDayLabel(row.date),
+    revenue,
+    spent,
+    profit: roundTo(calculateProfit(revenue, spent)),
+  };
+}
+
+/**
+ * Everything the detail page needs in one read. `permissions` is computed from the
+ * caller rather than sent by the client: the UI only decides which buttons to draw,
+ * and every write endpoint checks the same rules again on its own.
+ */
+export async function readBundleDetail(user: CurrentUser, id: string): Promise<BundleDetail | null> {
+  const row = await prisma.bundle.findUnique({ where: { id }, select: detailSelect });
+  if (!row) return null;
+
+  return {
+    ...toBundleListItem(row),
+    activity: buildActivity(row),
+    daily: row.metrics.map(toDayPoint).slice(-DAILY_WINDOW_DAYS),
+    permissions: {
+      canManage: canManageBundle(user, { userId: row.user.id }),
+      canDelete: isAdmin(user),
+    },
+  };
+}
+
+/** API-facing variant: a missing row is a 404 rather than a null the page must handle. */
+export async function getBundleDetail(user: CurrentUser, id: string): Promise<BundleDetail> {
+  const detail = await readBundleDetail(user, id);
+  if (!detail) throw notFound("Bundle not found");
+  return detail;
+}
+
+/**
+ * Adds a team comment. It goes in without touching `Bundle.updatedAt`: a note is
+ * not a data change, and letting it move "Updated" would make the list column lie
+ * about when the numbers last moved.
+ */
+export async function addBundleComment(user: CurrentUser, id: string, text: string): Promise<CreatedComment> {
+  const bundle = await prisma.bundle.findUnique({ where: { id }, select: { id: true } });
+  if (!bundle) throw notFound("Bundle not found");
+
+  const comment = await prisma.comment.create({
+    data: { bundleId: id, userId: user.id, text },
+    select: { id: true, text: true, createdAt: true, user: { select: { id: true, name: true } } },
+  });
+
+  return {
+    id: comment.id,
+    text: comment.text,
+    createdAt: comment.createdAt.toISOString(),
+    author: { id: comment.user.id, label: comment.user.name },
+  };
+}
+
+/**
+ * Hard delete, admins only — the same rule as the bulk endpoint, so "Delete" cannot
+ * mean one thing in the list and another on the page. BundleChange, Comment,
+ * BundleMetric and Notification all cascade from the bundle.
+ */
+export async function deleteBundle(user: CurrentUser, id: string): Promise<{ id: string; name: string }> {
+  const row = await prisma.bundle.findUnique({ where: { id }, select: { id: true, name: true, userId: true } });
+  if (!row) throw notFound("Bundle not found");
+  if (!isAdmin(user)) throw forbidden("Only an admin can delete bundles");
+
+  await prisma.bundle.delete({ where: { id } });
+  revalidateTag("dashboard", { expire: 0 });
+
+  return { id: row.id, name: row.name };
 }

@@ -13,17 +13,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useSignOut } from "@/hooks/useSignOut";
+import { initials } from "@/lib/utils";
 import type { CurrentUser } from "@/lib/dal";
-
-function initials(name: string): string {
-  return (
-    name
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() ?? "")
-      .join("") || "?"
-  );
-}
 
 export function UserMenu({ user }: { user: CurrentUser }) {
   const { run, pending } = useSignOut();

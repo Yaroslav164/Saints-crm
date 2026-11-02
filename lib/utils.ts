@@ -75,6 +75,19 @@ export function formatDayKey(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 
+export const DAY_MS = 86_400_000;
+
+/**
+ * Start of "N days ago" in UTC. Window bounds are UTC because `BundleMetric.date`
+ * is a Postgres DATE, which Prisma hands back as UTC midnight — mixing a local
+ * bound with those rows shifts the window by the timezone offset.
+ */
+export function utcDayStart(daysAgo: number): Date {
+  const date = new Date();
+  date.setUTCHours(0, 0, 0, 0);
+  return new Date(date.getTime() - daysAgo * DAY_MS);
+}
+
 export function roundTo(value: number, digits = 2): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
@@ -86,4 +99,15 @@ export function roiTone(value: number): RoiTone {
   if (value > 0) return "positive";
   if (value < 0) return "negative";
   return "neutral";
+}
+
+/** Up to two capital letters for an avatar fallback. */
+export function initials(name: string): string {
+  return (
+    name
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() ?? "")
+      .join("") || "?"
+  );
 }

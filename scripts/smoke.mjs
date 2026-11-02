@@ -488,6 +488,134 @@ async function main() {
     `status ${adminReassign.status}`,
   );
 
+  // 11. The detail page and its feed (stage 5). Everything below runs on the smoke
+  // bundle created above and is deleted with it, so a run leaves no comment behind.
+  const detailId = bundleDraft?.id;
+  const anonDetail = await request(`/api/bundles/${detailId}`);
+  check("GET /api/bundles/[id] requires a session", anonDetail.status === 401, `status ${anonDetail.status}`);
+
+  const detail = await request(`/api/bundles/${detailId}`, { jar });
+  const feed = detail.json?.data;
+  check(
+    "GET /api/bundles/[id] returns the row with its logged history",
+    detail.status === 200 &&
+      feed?.id === detailId &&
+      Array.isArray(feed?.activity) &&
+      feed?.activity.some((entry) => entry.kind === "change" && entry.field === "bundle") &&
+      feed?.activity.some((entry) => entry.kind === "change" && entry.field === "budgetSpent"),
+    `${feed?.activity?.length} entries`,
+  );
+
+  check(
+    "the detail payload carries what the page draws: permissions and the daily series",
+    feed?.permissions?.canManage === true && feed?.permissions?.canDelete === true && Array.isArray(feed?.daily),
+    JSON.stringify(feed?.permissions ?? {}),
+  );
+
+  const foreignDetail = await request(`/api/bundles/${detailId}`, { jar: buyer });
+  check(
+    "after an admin's reassignment the previous owner reads it, and it is read-only for them",
+    foreignDetail.json?.data?.permissions?.canManage === false &&
+      foreignDetail.json?.data?.permissions?.canDelete === false,
+    JSON.stringify(foreignDetail.json?.data?.permissions ?? {}),
+  );
+
+  const missing = await request("/api/bundles/no-such-bundle-id", { jar });
+  check("GET /api/bundles/[id] answers 404 for an unknown id", missing.status === 404, `status ${missing.status}`);
+
+  const anonComment = await request(`/api/bundles/${detailId}/comments`, { method: "POST", body: { text: "hello" } });
+  check("POST /api/bundles/[id]/comments requires a session", anonComment.status === 401, `status ${anonComment.status}`);
+
+  const emptyComment = await request(`/api/bundles/${detailId}/comments`, { method: "POST", jar, body: { text: "   " } });
+  check(
+    "a blank comment is rejected with a field message",
+    emptyComment.status === 422 && Boolean(emptyComment.json?.error?.fields?.text),
+    `status ${emptyComment.status}`,
+  );
+
+  const note = `Smoke note ${Date.now()} — keep the lander under review`;
+  const commented = await request(`/api/bundles/${detailId}/comments`, {
+    method: "POST",
+    jar: buyer,
+    body: { text: note },
+  });
+  check(
+    "a team member can comment on someone else's bundle",
+    commented.status === 200 &&
+      commented.json?.data?.text === note &&
+      commented.json?.data?.author?.label === "Ivan Ivanov",
+    `status ${commented.status}, author ${commented.json?.data?.author?.label}`,
+  );
+
+  const afterComment = await request(`/api/bundles/${detailId}`, { jar });
+  const entries = afterComment.json?.data?.activity ?? [];
+  check(
+    "the comment joins the feed in chronological order",
+    entries.some((entry) => entry.kind === "comment" && entry.text === note) &&
+      entries.every((entry, index) => index === 0 || entries[index - 1].at <= entry.at),
+    `${entries.length} entries`,
+  );
+
+  const moved = await request(`/api/bundles/${detailId}/status`, { method: "PATCH", jar, body: { status: "PROFIT" } });
+  const afterMove = await request(`/api/bundles/${detailId}`, { jar });
+  check(
+    "a status change reaches the feed as one field change with the old and new value",
+    moved.status === 200 &&
+      (afterMove.json?.data?.activity ?? []).some(
+        (entry) =>
+          entry.kind === "change" && entry.field === "status" && entry.oldValue === "TESTING" && entry.newValue === "PROFIT",
+      ),
+    `status ${moved.status}`,
+  );
+
+  await request("/api/bundles/bulk", { method: "POST", jar, body: { action: "archive", ids: [detailId] } });
+  const afterArchive = await request(`/api/bundles/${detailId}`, { jar });
+  check(
+    "archiving is logged too, so the feed explains why a row left the working list",
+    (afterArchive.json?.data?.activity ?? []).some(
+      (entry) => entry.kind === "change" && entry.field === "isArchived" && entry.newValue === "true",
+    ),
+    `${(afterArchive.json?.data?.activity ?? []).length} entries`,
+  );
+
+  const page = await request(`/bundles/${detailId}`, { jar });
+  check(
+    "GET /bundles/[id] renders the whole detail screen server-side",
+    page.status === 200 &&
+      page.text.includes("Activity") &&
+      page.text.includes(note) &&
+      page.text.includes("Change status") &&
+      page.text.includes("Bundle setup") &&
+      page.text.includes("Profit by day"),
+    `status ${page.status}`,
+  );
+  check(
+    "the page draws the feed in words, not machine keys",
+    page.text.includes("changed status") && page.text.includes("updated archive"),
+    "looked for the human summary of the change rows",
+  );
+  check("an archived bundle says so on the page", page.text.includes("Archived"), "");
+
+  const anonPage = await request(`/bundles/${detailId}`, { jar: createJar() });
+  check(
+    "an anonymous visitor to the detail page is redirected to the sign-in screen",
+    anonPage.status === 307 && (anonPage.location ?? "").includes("/auth/login"),
+    `status ${anonPage.status}, location ${anonPage.location ?? "none"}`,
+  );
+
+  // PPR flushes the segment's skeleton before the page can answer, so a streamed
+  // not-found may arrive with status 200; what the user must see either way is the
+  // 404 screen, not a crashed render.
+  const missingPage = await request("/bundles/no-such-bundle-id", { jar });
+  check(
+    "a deleted or wrong id gets the 404 screen, not an error boundary",
+    [200, 404].includes(missingPage.status) && missingPage.text.includes("Bundle not found"),
+    `status ${missingPage.status}`,
+  );
+
+  const foreignDelete = await request(`/api/bundles/${detailId}`, { method: "DELETE", jar: buyer });
+  check("a buyer cannot delete a bundle through the API", foreignDelete.status === 403, `status ${foreignDelete.status}`);
+
   const removed = await request("/api/bundles/bulk", {
     method: "POST",
     jar,

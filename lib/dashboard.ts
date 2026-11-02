@@ -1,17 +1,8 @@
 import { cacheLife, cacheTag } from "next/cache";
 import { prisma } from "@/lib/db";
 import { STATUS_META, STATUS_ORDER } from "@/lib/status";
-import { calculateProfit, calculateROI, formatDayKey, formatDayLabel, roundTo } from "@/lib/utils";
+import { calculateProfit, calculateROI, formatDayKey, formatDayLabel, roundTo, utcDayStart } from "@/lib/utils";
 import type { BundleStatus } from "@/lib/generated/prisma/enums";
-
-const DAY_MS = 86_400_000;
-
-/** Window bounds in UTC because BundleMetric.date is a Postgres DATE. */
-function utcDayStart(daysAgo: number): Date {
-  const date = new Date();
-  date.setUTCHours(0, 0, 0, 0);
-  return new Date(date.getTime() - daysAgo * DAY_MS);
-}
 
 export type StatusSlice = {
   status: BundleStatus;

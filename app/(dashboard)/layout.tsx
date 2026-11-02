@@ -27,10 +27,26 @@ function HeaderSkeleton() {
   );
 }
 
+function MobileNavSkeleton() {
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-30 h-14 border-t border-sidebar-border bg-sidebar/95 md:hidden">
+      <div className="grid grid-cols-4">
+        {Array.from({ length: 4 }).map((_, index) => (
+          <Skeleton key={index} className="mx-4 my-3 h-6 rounded-lg" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
- * App shell. Sidebar and Header read the session, so under Cache Components
- * each one needs its own boundary — the static shell (with the page content
- * below) still prerenders while they stream in.
+ * App shell. Sidebar, Header and MobileNav read the session or the current path, so
+ * under Cache Components each one needs its own boundary — the static shell (with the
+ * page content below) still prerenders while they stream in.
+ *
+ * `usePathname()` inside MobileNav matters only on a dynamic route: on `/bundles` the
+ * path is known at build time, but on `/bundles/[id]` the shell cannot be prerendered
+ * with it, and the build refuses a client hook that is not behind a boundary.
  */
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   return (
@@ -47,7 +63,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
         <main className="flex-1 px-3 pb-20 pt-4 md:px-5 md:pb-6 md:pt-5">{children}</main>
       </div>
 
-      <MobileNav />
+      <Suspense fallback={<MobileNavSkeleton />}>
+        <MobileNav />
+      </Suspense>
     </div>
   );
 }

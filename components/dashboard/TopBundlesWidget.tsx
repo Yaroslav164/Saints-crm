@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { BundleStatusBadge } from "@/components/bundles/BundleStatusBadge";
 import { formatCurrency, formatPercent } from "@/lib/utils";
@@ -23,7 +24,9 @@ export function TopBundlesWidget({ bundles, className }: { bundles: TopBundle[];
               <li key={bundle.id} className="flex items-center gap-3 py-2.5">
                 <span className="w-4 shrink-0 text-xs tabular-nums text-muted-foreground">{index + 1}</span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{bundle.name}</p>
+                  <Link href={`/bundles/${bundle.id}`} className="block truncate text-sm font-medium hover:underline">
+                    {bundle.name}
+                  </Link>
                   <p className="truncate text-xs text-muted-foreground">
                     {bundle.offer} · {bundle.buyer}
                   </p>
