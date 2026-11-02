@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { getSessionUser } from "@/lib/dal";
 import { BrandMark } from "./BrandMark";
 import { NavList } from "./NavList";
+import { navHrefsForRole } from "./nav-items";
 
 function initials(name: string): string {
   return (
@@ -24,7 +25,7 @@ export async function Sidebar() {
         <BrandMark />
       </div>
       <div className="flex-1 overflow-y-auto p-3">
-        <NavList />
+        <NavList hrefs={navHrefsForRole(user?.role ?? "USER")} />
       </div>
       {user && (
         <footer className="border-t border-sidebar-border p-3">

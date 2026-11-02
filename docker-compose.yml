@@ -1,0 +1,53 @@
+name: saints-crm
+
+# Whole stack for a VPS: PostgreSQL plus the CRM. Bring it up with
+#   AUTH_SECRET=$(openssl rand -base64 32) docker compose up -d --build
+# or put AUTH_SECRET in a .env file next to this one (compose reads it automatically).
+# The README's «Деплой на VPS» section covers the reverse proxy and the demo seed.
+
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-saints_crm}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-saints_crm}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+    # Deliberately not published. This machine (and most VPS hosts) already has PostgreSQL
+    # on 5432, so a mapping here fails to bind and teaches nothing; reach the database from
+    # inside the network instead:  docker compose exec db psql -U postgres -d saints_crm
+    # ports:
+    #   - "127.0.0.1:5433:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      # Not just "started": the first `migrate deploy` of a cold volume fails against a
+      # PostgreSQL that is still initialising its data directory.
+      db:
+        condition: service_healthy
+    environment:
+      # Host `db`, not `localhost` — inside the compose network that name is the database.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-saints_crm}?schema=public
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET must be set — see the README, step 1}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
+      SEED_ON_START: ${SEED_ON_START:-0}
+      # Auth.js reads the Host header with trustHost enabled, so this is only needed when a
+      # proxy rewrites it. Leave it unset and the app works behind a plain nginx proxy_pass.
+      # AUTH_URL: https://crm.example.com
+    ports:
+      - "${APP_PORT:-3000}:3000"
+
+volumes:
+  db-data:

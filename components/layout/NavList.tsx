@@ -9,10 +9,17 @@ import { cn } from "@/lib/utils";
  * Rendered in three shapes — sidebar, tablet drawer and mobile bottom bar — so
  * the active state and item list live in one place. NAV_ITEMS is imported here
  * rather than passed as a prop: icon components are not serialisable across the
- * server/client boundary.
+ * server/client boundary, so what travels is the list of hrefs the role may see.
  */
-export function NavList({ variant = "stack" }: { variant?: "stack" | "grid" }) {
+export function NavList({
+  variant = "stack",
+  hrefs,
+}: {
+  variant?: "stack" | "grid";
+  hrefs: string[];
+}) {
   const pathname = usePathname();
+  const items = NAV_ITEMS.filter((item) => hrefs.includes(item.href));
 
   return (
     <nav
@@ -22,7 +29,7 @@ export function NavList({ variant = "stack" }: { variant?: "stack" | "grid" }) {
       )}
       aria-label="Main"
     >
-      {NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const active = isNavItemActive(item, pathname);
         const Icon = item.icon;
 

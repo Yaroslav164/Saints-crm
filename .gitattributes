@@ -1,0 +1,5 @@
+# The container entrypoint is read by /bin/sh inside a Debian image. Without this rule a
+# checkout on Windows (git core.autocrlf=true is common there) writes CRLF into the script,
+# and the container dies with "entrypoint.sh: not found" — the shell cannot execute a file
+# whose shebang line ends with a carriage return.
+*.sh text eol=lf

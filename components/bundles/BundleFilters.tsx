@@ -64,11 +64,15 @@ export function BundleFilters({
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute top-1/2 left-2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
+            id="bundle-search"
             name="search"
             defaultValue={state.search ?? ""}
             placeholder="Search by name"
             className="h-8 w-56 pl-8"
             aria-label="Search bundles by name"
+            // "/" from the page shortcut lands here; the hint only claims the key while it
+            // is actually reachable, so the placeholder and the tooltip are the same promise.
+            title="Search by name — press / to focus"
           />
         </div>
 

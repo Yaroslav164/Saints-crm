@@ -220,3 +220,85 @@ export type RemovedRecord = {
 export type AppSettings = {
   roiAlertThreshold: number;
 };
+
+/**
+ * Stage 7 — CSV import, the notification bell and the audit log. Import shapes describe
+ * what a spreadsheet did or did not satisfy, so they are per row by construction; the
+ * audit shapes are the system-wide version of the bundle feed already rendered per bundle.
+ */
+
+export type ImportRowOutcome = {
+  /** Line number in the file, header included — the number a spreadsheet shows. */
+  line: number;
+  name: string | null;
+  ok: boolean;
+  /** Field key → message, the same envelope the form errors use. */
+  errors: Record<string, string>;
+};
+
+export type ImportResult = {
+  dryRun: boolean;
+  /** Data rows the parser found. */
+  rows: number;
+  created: number;
+  skipped: number;
+  /** Rows that failed validation, whatever happened to the file. */
+  invalid: number;
+  /** True when the file carried errors and "skip invalid rows" was off, so nothing was written. */
+  aborted: boolean;
+  columns: { matched: string[]; ignored: string[]; missing: string[] };
+  outcomes: ImportRowOutcome[];
+};
+
+export type NotificationDto = {
+  id: string;
+  /** Machine key (`roi_alert`); the UI picks an icon per type and falls back for unknown ones. */
+  type: string;
+  message: string;
+  at: string;
+  read: boolean;
+  bundle: Option | null;
+};
+
+export type NotificationsResponse = {
+  items: NotificationDto[];
+  /** Count of everything unread for this account, not only what `items` carries. */
+  unread: number;
+};
+
+export type AuditEntry = {
+  id: string;
+  kind: "change" | "comment";
+  at: string;
+  actor: Option;
+  bundle: { id: string; label: string };
+  field: string | null;
+  oldValue: string | null;
+  newValue: string | null;
+  text: string | null;
+};
+
+export type AuditResponse = {
+  items: AuditEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+  pageCount: number;
+  /** The log is merged from two tables over a scan window; set when that window was full. */
+  truncated: boolean;
+};
+
+export type AuditFacets = {
+  actors: Option[];
+  fields: string[];
+};
+
+/**
+ * Dictionary names a CSV may reference, shown next to the import preview so an unknown
+ * offer is fixable without leaving the dialog.
+ */
+export type ImportVocabulary = {
+  offers: string[];
+  geos: string[];
+  tags: string[];
+};

@@ -1,0 +1,31 @@
+# The build context is the source, not the machine: everything below is either regenerated
+# inside the image or belongs to whoever is building it.
+
+node_modules
+.next
+out
+coverage
+
+# The generated client is rebuilt by `prisma generate` in the builder stage; a copy from a
+# host with a different Node or platform would carry the wrong engine binaries.
+lib/generated
+
+# Local secrets must not become image layers. `.env.example` is not needed either — the
+# container is configured through compose's `environment`.
+.env
+.env.*
+.env.local
+
+.git
+.gitignore
+.gitattributes
+
+# Agent scratch space (see .gitignore): Tailwind's source detection is not the reason to
+# drop it here, a browser profile with locked files is simply never part of a build.
+.qwen
+
+npm-debug.log*
+yarn-error.log*
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store

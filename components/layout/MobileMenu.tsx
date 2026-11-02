@@ -6,8 +6,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { BrandMark } from "./BrandMark";
 import { NavList } from "./NavList";
 
-/** Drawer that replaces the sidebar on tablet widths. */
-export function MobileMenu() {
+/**
+ * Drawer that replaces the sidebar on tablet widths. The hrefs come from the server-side
+ * header because the role does — a client component here cannot read the session without
+ * making the whole shell wait for it.
+ */
+export function MobileMenu({ hrefs }: { hrefs: string[] }) {
   return (
     <Sheet>
       <SheetTrigger asChild>
@@ -24,7 +28,7 @@ export function MobileMenu() {
           </SheetTitle>
         </SheetHeader>
         <div className="p-3">
-          <NavList />
+          <NavList hrefs={hrefs} />
         </div>
       </SheetContent>
     </Sheet>

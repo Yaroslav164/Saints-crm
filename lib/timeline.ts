@@ -56,7 +56,25 @@ const FIELDS: Record<string, FieldDescriptor> = {
   conversions: { label: "conversions", show: asCount },
   notes: { label: "notes", show: asText },
   isArchived: { label: "archive", show: (value) => (value === "true" ? "archived" : "active") },
+  // Written by the CSV importer instead of `bundle`, so a bulk load reads as a load.
+  import: { label: "import", show: () => "imported this bundle", event: "created" },
 };
+
+/**
+ * The vocabulary in the order a reader would expect to see it — form order, not
+ * alphabetical. The audit screen offers these as filter options and puts anything it finds
+ * in the log that is not listed here after them, so a field key from a future stage is
+ * filterable the day it first appears.
+ */
+export const FIELD_KEYS = Object.keys(FIELDS);
+
+/**
+ * Display name of a field key. An unknown one prints itself: the audit filter has to be
+ * able to name a key it found in the log even before anyone wrote a label for it.
+ */
+export function fieldLabel(field: string): string {
+  return FIELDS[field]?.label ?? field;
+}
 
 export type DescribedChange = {
   label: string;

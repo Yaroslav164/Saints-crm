@@ -350,6 +350,7 @@ export function TablePagination({
   total,
   pageCount,
   onChange,
+  emptyLabel = "No bundles",
 }: {
   state: QueryState;
   /** Effective page from the API: the requested one may have been clamped. */
@@ -357,13 +358,15 @@ export function TablePagination({
   total: number;
   pageCount: number;
   onChange: (next: QueryState) => void;
+  /** The audit screen paginates log rows, not bundles, and says so. */
+  emptyLabel?: string;
 }) {
   const pageSize = Number.parseInt(state.pageSize ?? "20", 10) || 20;
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
       <p className="text-muted-foreground">
-        {total === 0 ? "No bundles" : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
+        {total === 0 ? emptyLabel : `${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
       </p>
       <div className="flex items-center gap-2">
         <Select value={String(pageSize)} onValueChange={(value) => onChange(withParams(state, { pageSize: value }))}>

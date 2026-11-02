@@ -641,17 +641,20 @@ async function main() {
       },
     });
 
-    // The alert feature needs rows to show: flag every bundle under -20% ROI.
+    // The alert feature needs rows to show: flag every bundle under -20% ROI, for its
+    // buyer as well as for the admin — the bell is read by whoever owns the work.
     const roi = spent > 0 ? ((revenue - spent) / spent) * 100 : 0;
     if (["LOSS", "DRAINED"].includes(bundle.status) || (roi < -20 && spent > 0)) {
-      await prisma.notification.create({
-        data: {
-          userId: adminId,
-          bundleId: row.id,
-          type: "roi_alert",
-          message: `Bundle "${row.name}" ROI is ${round(roi, 1)}% — below the -20% threshold.`,
-        },
-      });
+      for (const userId of new Set([adminId, row.userId])) {
+        await prisma.notification.create({
+          data: {
+            userId,
+            bundleId: row.id,
+            type: "roi_alert",
+            message: `Bundle "${row.name}" ROI is ${round(roi, 1)}% — below the -20% threshold.`,
+          },
+        });
+      }
     }
   }
 

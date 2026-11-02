@@ -59,8 +59,10 @@ export function BundleActivity({
 function ChangeLine({ entry }: { entry: BundleActivityEntry }) {
   const change = describeChange(entry.field ?? "", entry.oldValue, entry.newValue);
 
+  // The wording comes from `lib/timeline.ts`, so "created" and "imported" stay one row
+  // type in the feed and two sentences in the vocabulary.
   if (change.isCreation) {
-    return <p className="text-sm text-muted-foreground">created this bundle</p>;
+    return <p className="text-sm text-muted-foreground">{change.to}</p>;
   }
 
   return (

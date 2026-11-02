@@ -35,5 +35,9 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/bundles/:path*", "/analytics/:path*", "/settings/:path*", "/auth/:path*"],
+  // Every page behind the login, so an anonymous visit gets a real 307 with the original
+  // path instead of a streamed redirect. `/audit` belongs here for the same reason the
+  // others do; `/api/*` deliberately does not — those answers are JSON, and a redirect
+  // would turn a readable 401 into an empty 307 for every script that calls them.
+  matcher: ["/", "/bundles/:path*", "/analytics/:path*", "/audit/:path*", "/settings/:path*", "/auth/:path*"],
 };

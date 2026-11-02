@@ -2,15 +2,17 @@
 
 import { useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { DownloadIcon, PlusIcon } from "lucide-react";
+import { DownloadIcon, PlusIcon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { BulkActionsBar } from "@/components/bundles/BulkActionsBar";
 import { BundleDialog } from "@/components/bundles/BundleDialog";
 import { BundleFilters } from "@/components/bundles/BundleFilters";
 import { BundleTable, EmptyState, TablePagination, TableSkeleton } from "@/components/bundles/BundleTable";
+import { ImportDialog } from "@/components/bundles/ImportDialog";
 import { toQuery } from "@/lib/api-client";
 import { useBundlesQuery, type QueryState } from "@/hooks/useBundles";
-import type { BundleFacets, BundleListItem } from "@/types";
+import { useHotkeys } from "@/hooks/useHotkeys";
+import type { BundleFacets, BundleListItem, ImportVocabulary } from "@/types";
 
 /** Only these reach the query; anything else in the URL is ignored. */
 const FILTER_KEYS = [
@@ -50,10 +52,12 @@ function readUrl(params: URLSearchParams): QueryState {
  */
 export function BundlesView({
   facets,
+  vocabulary,
   isAdmin,
   currentUserId,
 }: {
   facets: BundleFacets;
+  vocabulary: ImportVocabulary;
   isAdmin: boolean;
   currentUserId: string;
 }) {
@@ -61,12 +65,18 @@ export function BundlesView({
   const [state, setState] = useState<QueryState>(() => readUrl(searchParams));
   const [selected, setSelected] = useState<string[]>([]);
   const [formKey, setFormKey] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
   // `?new=1` from the dashboard quick action opens the create dialog on arrival.
   const [dialog, setDialog] = useState<{ open: boolean; bundle: BundleListItem | null }>({
     open: Boolean(searchParams.get("new")),
     bundle: null,
   });
   const query = useBundlesQuery(state);
+
+  useHotkeys({
+    n: () => setDialog({ open: true, bundle: null }),
+    "/": () => document.getElementById("bundle-search")?.focus(),
+  });
 
   const canManage = (row: BundleListItem) => isAdmin || row.buyer.id === currentUserId;
 
@@ -99,9 +109,17 @@ export function BundlesView({
           <h1 className="text-xl font-semibold">Bundles</h1>
           <p className="text-sm text-muted-foreground">
             {data ? `${data.total} bundle${data.total === 1 ? "" : "s"} match the current filters.` : "Loading bundles…"}
+            <span className="ml-2 hidden text-xs lg:inline">
+              <kbd className="rounded border border-border bg-muted px-1 font-sans text-[0.65rem]">N</kbd> new ·{" "}
+              <kbd className="rounded border border-border bg-muted px-1 font-sans text-[0.65rem]">/</kbd> search
+            </span>
           </p>
         </div>
         <div className="flex gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+            <UploadIcon />
+            Import CSV
+          </Button>
           <Button asChild variant="outline" size="sm">
             <a href={`/api/bundles/export${toQuery(state)}`} download>
               <DownloadIcon />
@@ -158,6 +176,8 @@ export function BundlesView({
       {query.isFetching && !query.isPending && (
         <p className="text-xs text-muted-foreground">Refreshing…</p>
       )}
+
+      <ImportDialog open={importOpen} onOpenChange={setImportOpen} vocabulary={vocabulary} />
 
       <BundleDialog
         facets={facets}

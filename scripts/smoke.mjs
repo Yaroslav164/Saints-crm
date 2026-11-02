@@ -200,7 +200,7 @@ async function main() {
   for (const [path, needles] of [
     // The list screen is real since stage 3: its server shell carries the filter
     // bar and the loading state, while the rows arrive over the API.
-    ["/bundles", ["Bundles", "Export CSV", "New bundle", "Loading bundles", "Search by name"]],
+    ["/bundles", ["Bundles", "Export CSV", "Import CSV", "New bundle", "Loading bundles", "Search by name"]],
     // Stage 6 replaced both placeholders with screens that read their own queries, so what
     // proves the shell arrived is the period control and the tab strip, not a number.
     ["/analytics", ["Analytics", "Profit by buyer", "Offer performance", "From idea to scale", "Top bundles for the period", "30 days"]],
@@ -989,6 +989,403 @@ async function main() {
       anonAnalyticsPage.status === 307 &&
       (anonAnalyticsPage.location ?? "").includes("from=%2Fanalytics"),
     `page ${analyticsPage.status}, anonymous ${anonAnalyticsPage.status}`,
+  );
+
+  // 13. Stage 7 — CSV import, the notification bell, the audit log.
+  //
+  // Everything written below is written by a freshly registered account that owns nothing
+  // else, and is deleted again at the end of the block (bundles first, then the account —
+  // the reverse order would be refused by the same rule the stage 6 block asserts). The
+  // threshold is put back where the seed left it, so a run cannot leave the team's alert
+  // rule set to a smoke value.
+  const header = ["Name", "Offer", "Angle", "GEOs", "Buyer", "Status", "Budget planned", "Spent", "Revenue", "Clicks", "Conversions", "Tags", "Notes", "Creative"];
+  const cell = (value) => {
+    const text = value === undefined || value === null ? "" : String(value);
+    return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  const csvFile = (rows, columns = header) => [columns.map(cell).join(","), ...rows.map((row) => row.map(cell).join(","))].join("\r\n");
+
+  const importOfferName = sample?.offer?.label;
+  const geoCode = sample?.geos?.[0]?.label;
+  const rowFor = (name, patch = {}) => {
+    const row = {
+      Name: name,
+      Offer: importOfferName,
+      Angle: "Angle written by the smoke run",
+      GEOs: geoCode,
+      Buyer: "",
+      Status: "TESTING",
+      "Budget planned": 400,
+      Spent: 500,
+      Revenue: 100,
+      Clicks: 5000,
+      Conversions: 10,
+      Tags: "",
+      Notes: "",
+      Creative: "",
+      ...patch,
+    };
+    return header.map((key) => row[key]);
+  };
+
+  const stamp7 = Date.now();
+  const goodName = `Smoke import ${stamp7}`;
+  const importEmail = `smoke-import-${stamp7}@saints.com`;
+  const importAccount = await request("/api/auth/register", {
+    method: "POST",
+    body: { name: "Smoke Importer", email: importEmail, password: "saints2026" },
+  });
+  const importer = await signInSession(importEmail, "saints2026");
+  check(
+    "a dedicated account is registered for the import rows",
+    importAccount.status === 200 && importer.has("authjs.session-token"),
+    `status ${importAccount.status}`,
+  );
+
+  const anonImport = await request("/api/bundles/import", { method: "POST", body: { text: csvFile([rowFor(goodName)]) } });
+  check("POST /api/bundles/import requires a session", anonImport.status === 401, `status ${anonImport.status}`);
+
+  const anonTemplate = await request("/api/bundles/import/template");
+  const template = await request("/api/bundles/import/template", { jar });
+  const templateLines = template.text.trim().split(/\r?\n/);
+  check(
+    "the import template offers the column list as a file",
+    anonTemplate.status === 401 &&
+      template.status === 200 &&
+      template.contentType?.startsWith("text/csv") &&
+      template.disposition?.includes("attachment") &&
+      templateLines[0].includes("GEOs") &&
+      templateLines.length === 2,
+    `anon ${anonTemplate.status}, ${templateLines.length} lines, ${template.contentType}`,
+  );
+
+  const preview = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: csvFile([rowFor(goodName)]), dryRun: true },
+  });
+  const previewData = preview.json?.data;
+  const previewList = await request(`/api/bundles?search=${encodeURIComponent(goodName)}`, { jar });
+  check(
+    "a dry run reports the row as valid and writes nothing",
+    preview.status === 200 &&
+      previewData?.dryRun === true &&
+      previewData?.rows === 1 &&
+      previewData?.invalid === 0 &&
+      previewData?.created === 0 &&
+      previewList.json?.data?.total === 0,
+    `rows ${previewData?.rows}, invalid ${previewData?.invalid}, created ${previewData?.created}, left in the list ${previewList.json?.data?.total}`,
+  );
+
+  const unknownOffer = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: csvFile([rowFor(`No offer ${stamp7}`, { Offer: "Offer that does not exist" })]), dryRun: true },
+  });
+  const unknownOfferErrors = unknownOffer.json?.data?.outcomes?.[0]?.errors ?? {};
+  check(
+    "an unknown offer fails the row and names the place that fixes it",
+    unknownOffer.json?.data?.invalid === 1 &&
+      /Settings/.test(unknownOfferErrors.offer ?? "") &&
+      unknownOffer.json?.data?.created === 0,
+    JSON.stringify(unknownOfferErrors),
+  );
+
+  const tooManyConversions = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: csvFile([rowFor(`Bad maths ${stamp7}`, { Clicks: 2, Conversions: 10 })]), dryRun: true },
+  });
+  check(
+    "the row is validated by the same schema as the form, not a copy of it",
+    (tooManyConversions.json?.data?.outcomes?.[0]?.errors ?? {}).conversions !== undefined,
+    JSON.stringify(tooManyConversions.json?.data?.outcomes?.[0]?.errors ?? {}),
+  );
+
+  const derivedColumns = [...header, "CR %", "ROI %", "Profit"];
+  const withDerived = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: {
+      text: csvFile([rowFor(`Derived ignored ${stamp7}`).concat(["0.5", "-80", "-400"])], derivedColumns),
+      dryRun: true,
+    },
+  });
+  check(
+    "columns the app computes itself are read and ignored, not trusted",
+    withDerived.json?.data?.invalid === 0 && withDerived.json?.data?.columns?.ignored?.includes("ROI %"),
+    JSON.stringify(withDerived.json?.data?.columns?.ignored ?? []),
+  );
+
+  const assignedToOther = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: csvFile([rowFor(`Not yours ${stamp7}`, { Buyer: "Ivan Ivanov" })]), dryRun: true },
+  });
+  const assignError = (assignedToOther.json?.data?.outcomes?.[0]?.errors ?? {}).buyer ?? "";
+  check(
+    "a buyer cannot import work onto another buyer's name",
+    assignedToOther.json?.data?.invalid === 1 && /admin/i.test(assignError),
+    assignError || "no buyer error reported",
+  );
+
+  const strictFile = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: {
+      text: csvFile([rowFor(`Strict good ${stamp7}`), rowFor(`Strict bad ${stamp7}`, { Offer: "Nothing" })]),
+      dryRun: false,
+      skipInvalid: false,
+    },
+  });
+  const strictList = await request(`/api/bundles?search=${encodeURIComponent(`Strict good ${stamp7}`)}`, { jar });
+  check(
+    "with skip-invalid off, one bad row refuses the whole file",
+    strictFile.json?.data?.aborted === true &&
+      strictFile.json?.data?.created === 0 &&
+      strictList.json?.data?.total === 0,
+    `aborted ${strictFile.json?.data?.aborted}, created ${strictFile.json?.data?.created}, left ${strictList.json?.data?.total}`,
+  );
+
+  const tooManyRows = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: csvFile(Array.from({ length: 501 }, (_, index) => rowFor(`Over the cap ${stamp7} ${index}`))), dryRun: true },
+  });
+  check("a file over the row cap is refused before any row is read", tooManyRows.status === 413, `status ${tooManyRows.status}`);
+
+  const missingColumnFile = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: { text: ["Name", "x"].join("\r\n"), dryRun: true },
+  });
+  check(
+    "a header without the required columns says which ones",
+    missingColumnFile.status === 422 && /Offer|GEOs|Status/.test(missingColumnFile.json?.error?.message ?? ""),
+    `status ${missingColumnFile.status}, ${missingColumnFile.json?.error?.message}`,
+  );
+
+  const imported = await request("/api/bundles/import", {
+    method: "POST",
+    jar: importer,
+    body: {
+      text: csvFile([rowFor(goodName), rowFor(`${goodName} B`, { Spent: 500, Revenue: 700 })]),
+      dryRun: false,
+      skipInvalid: true,
+    },
+  });
+  const importedData = imported.json?.data;
+  const importedList = await request(`/api/bundles?search=${encodeURIComponent(goodName)}&pageSize=100`, { jar: importer });
+  check(
+    "a real import writes the valid rows, owned by the caller",
+    imported.status === 200 &&
+      importedData?.created === 2 &&
+      importedData?.dryRun === false &&
+      importedList.json?.data?.total === 2 &&
+      importedList.json?.data?.items?.every((item) => item.buyer.label === "Smoke Importer"),
+    `created ${importedData?.created}, in the list ${importedList.json?.data?.total}`,
+  );
+
+  // The importer is also an audit writer: `import` is a field key of its own, so the log can
+  // tell a loaded file apart from a bundle somebody filled in by hand.
+  const auditImport = await request(`/api/audit?field=import&search=${encodeURIComponent(goodName)}`, { jar });
+  check(
+    "imported bundles reach the log as their own event",
+    (auditImport.json?.data?.items ?? []).length === 2 &&
+      auditImport.json?.data?.items?.every((entry) => entry.field === "import"),
+    `${auditImport.json?.data?.items?.length} rows`,
+  );
+
+  const importedIds = (importedList.json?.data?.items ?? []).map((item) => item.id);
+
+  // ROI of the first imported row is (100 - 500) / 500 = -80%, under the seeded -20 line.
+  const alerts = await request("/api/notifications", { jar: importer });
+  const alertData = alerts.json?.data;
+  const losingAlert = (alertData?.items ?? []).find((item) => item.message.includes(goodName));
+  check(
+    "a bundle imported under the threshold raises an alert for its owner",
+    alerts.status === 200 && losingAlert?.type === "roi_alert" && losingAlert?.read === false,
+    JSON.stringify({ unread: alertData?.unread, found: Boolean(losingAlert) }),
+  );
+
+  const adminAlerts = await request("/api/notifications", { jar });
+  check(
+    "admins are told too, and only the caller's own rows come back",
+    (adminAlerts.json?.data?.items ?? []).some((item) => item.message.includes(goodName)),
+    `${adminAlerts.json?.data?.items?.length} rows, unread ${adminAlerts.json?.data?.unread}`,
+  );
+
+  const otherBuyerAlerts = await request("/api/notifications", { jar: buyer });
+  check(
+    "a third account cannot read an alert that is not theirs",
+    (otherBuyerAlerts.json?.data?.items ?? []).every((item) => !item.message.includes(goodName)),
+    `${otherBuyerAlerts.json?.data?.items?.length} rows for another buyer`,
+  );
+
+  const anonNotifications = await request("/api/notifications");
+  check("GET /api/notifications requires a session", anonNotifications.status === 401, `status ${anonNotifications.status}`);
+
+  const markedOne = await request("/api/notifications/read", { method: "POST", jar: importer, body: { ids: [losingAlert?.id] } });
+  const afterMarkOne = await request("/api/notifications", { jar: importer });
+  check(
+    "marking one alert by id leaves the rest unread",
+    markedOne.json?.data?.marked === 1 &&
+      afterMarkOne.json?.data?.unread === (alertData?.unread ?? 0) - 1 &&
+      afterMarkOne.json?.data?.items?.find((item) => item.id === losingAlert?.id)?.read === true,
+    `marked ${markedOne.json?.data?.marked}, unread ${alertData?.unread} → ${afterMarkOne.json?.data?.unread}`,
+  );
+
+  const markedRest = await request("/api/notifications/read", { method: "POST", jar: importer, body: {} });
+  const afterMarkAll = await request("/api/notifications", { jar: importer });
+  const markedNothing = await request("/api/notifications/read", { method: "POST", jar: importer, body: {} });
+  check(
+    "an empty read receipt marks everything unread, and the next one marks nothing",
+    afterMarkAll.json?.data?.unread === 0 &&
+      markedRest.json?.data?.marked >= 0 &&
+      markedNothing.json?.data?.marked === 0,
+    `unread ${afterMarkAll.json?.data?.unread}, then ${markedNothing.json?.data?.marked}`,
+  );
+
+  // Moving the threshold has to re-raise the bell from the new line — otherwise the number
+  // in Settings and the alerts a reader sees would disagree until every bundle was touched.
+  const loosened = await request("/api/settings", { method: "PUT", jar, body: { roiAlertThreshold: -90 } });
+  const afterLoosen = await request("/api/notifications?unread=1", { jar: importer });
+  check(
+    "loosening the threshold clears the alerts it no longer flags",
+    loosened.json?.data?.roiAlertThreshold === -90 && afterLoosen.json?.data?.unread === 0,
+    `threshold ${loosened.json?.data?.roiAlertThreshold}, unread ${afterLoosen.json?.data?.unread}`,
+  );
+
+  const tightened = await request("/api/settings", { method: "PUT", jar, body: { roiAlertThreshold: -20 } });
+  const afterTighten = await request("/api/notifications?unread=1", { jar: importer });
+  check(
+    "putting it back re-raises them, and the seeded value is restored for the next run",
+    tightened.json?.data?.roiAlertThreshold === -20 &&
+      (afterTighten.json?.data?.items ?? []).some((item) => item.message.includes(goodName)),
+    `unread ${afterTighten.json?.data?.unread}`,
+  );
+
+  // Ids stay as loosely typed as everywhere else in this API (`idParamSchema` is "non-empty
+  // string"), so an id the caller does not own is not a validation error. What is worth
+  // promising is that it marks nothing, and that the reader's one real alert survives it.
+  const unknownIds = await request("/api/notifications/read", { method: "POST", jar: importer, body: { ids: ["not-a-notification"] } });
+  const afterUnknownIds = await request("/api/notifications?unread=1", { jar: importer });
+  check(
+    "a read receipt for an id that is not the caller's marks nothing",
+    unknownIds.json?.data?.marked === 0 && afterUnknownIds.json?.data?.unread === afterTighten.json?.data?.unread,
+    `marked ${unknownIds.json?.data?.marked}, unread ${afterUnknownIds.json?.data?.unread}`,
+  );
+
+  const dismissed = await request(`/api/notifications/${losingAlert?.id}`, { method: "DELETE", jar: importer });
+  const afterDismiss = await request("/api/notifications", { jar: importer });
+  check(
+    "dismissing an alert takes it out of that account's list",
+    dismissed.status === 200 &&
+      !(afterDismiss.json?.data?.items ?? []).some((item) => item.id === losingAlert?.id),
+    `status ${dismissed.status}, ${afterDismiss.json?.data?.items?.length} rows left`,
+  );
+
+  const anonAudit = await request("/api/audit");
+  const buyerAudit = await request("/api/audit", { jar: buyer });
+  check(
+    "the audit log is a session-only, admin-only read",
+    anonAudit.status === 401 && buyerAudit.status === 403,
+    `anon ${anonAudit.status}, buyer ${buyerAudit.status}`,
+  );
+
+  const audit = await request("/api/audit?pageSize=5", { jar });
+  const auditRows = audit.json?.data?.items ?? [];
+  const auditSorted = auditRows.every((entry, index) => index === 0 || auditRows[index - 1].at >= entry.at);
+  check(
+    "GET /api/audit pages the whole system newest-first",
+    audit.status === 200 &&
+      auditRows.length > 0 &&
+      auditRows.length <= 5 &&
+      auditSorted &&
+      audit.json?.data?.pageSize === 5 &&
+      audit.json?.data?.total > 5 &&
+      audit.json?.data?.pageCount === Math.ceil(audit.json?.data?.total / 5),
+    `${auditRows.length} of ${audit.json?.data?.total}, pageCount ${audit.json?.data?.pageCount}`,
+  );
+
+  const statusActor = auditRows.find((entry) => entry.actor.id === importAccount.json?.data?.id);
+  const auditByActor = await request(`/api/audit?actorId=${importAccount.json?.data?.id}&pageSize=100`, { jar });
+  check(
+    "filtering by who did it returns only their rows",
+    statusActor === undefined ||
+      (auditByActor.json?.data?.items ?? []).every((entry) => entry.actor.id === importAccount.json?.data?.id),
+    `${auditByActor.json?.data?.items?.length} rows for one actor`,
+  );
+
+  const auditByKind = await request("/api/audit?kind=comment&pageSize=100", { jar });
+  const auditByField = await request("/api/audit?field=budgetSpent&pageSize=100", { jar });
+  check(
+    "the type and field filters hold",
+    (auditByKind.json?.data?.items ?? []).every((entry) => entry.kind === "comment" && Boolean(entry.text)) &&
+      (auditByField.json?.data?.items ?? []).every((entry) => entry.field === "budgetSpent"),
+    `${auditByKind.json?.data?.items?.length} comments, ${auditByField.json?.data?.items?.length} spend rows`,
+  );
+
+  const auditSearch = await request(`/api/audit?search=${encodeURIComponent(goodName)}&pageSize=100`, { jar });
+  check(
+    "searching the log by bundle name stays inside that bundle",
+    (auditSearch.json?.data?.items ?? []).length > 0 &&
+      auditSearch.json?.data?.items.every((entry) => entry.bundle.label.includes(goodName)),
+    `${auditSearch.json?.data?.items?.length} rows`,
+  );
+
+  const badAudit = await request("/api/audit?kind=nonsense", { jar });
+  check("an unknown log type in the filter is rejected", badAudit.status === 422, `status ${badAudit.status}`);
+
+  const staleAuditPage = await request("/api/audit?page=999", { jar });
+  check(
+    "a page past the end of the log is clamped, like the bundle list",
+    staleAuditPage.json?.data?.page === staleAuditPage.json?.data?.pageCount,
+    `page ${staleAuditPage.json?.data?.page} of ${staleAuditPage.json?.data?.pageCount}`,
+  );
+
+  const auditPage = await request("/audit", { jar });
+  const buyerAuditPage = await request("/audit", { jar: buyer });
+  const anonAuditPage = await request("/audit", { jar: createJar() });
+  check(
+    "GET /audit renders the table for an admin and an explanation for a buyer",
+    auditPage.status === 200 &&
+      auditPage.text.includes("Audit log") &&
+      auditPage.text.includes("Every field change") &&
+      buyerAuditPage.status === 200 &&
+      buyerAuditPage.text.includes("Admin only") &&
+      !buyerAuditPage.text.includes("What happened"),
+    `admin ${auditPage.status}, buyer ${buyerAuditPage.status}`,
+  );
+  check(
+    "an anonymous visit to /audit is redirected with the original path",
+    anonAuditPage.status === 307 && (anonAuditPage.location ?? "").includes("from=%2Faudit"),
+    `status ${anonAuditPage.status}, location ${anonAuditPage.location ?? "none"}`,
+  );
+
+  const bellOnShell = await request("/", { jar });
+  check(
+    "the bell is part of the authenticated shell",
+    bellOnShell.status === 200 && bellOnShell.text.includes("Notifications") && bellOnShell.text.includes("aria-label=\"Notifications"),
+    `status ${bellOnShell.status}`,
+  );
+
+  const removedImports = await request("/api/bundles/bulk", { method: "POST", jar, body: { action: "delete", ids: importedIds } });
+  const alertsAfterDelete = await request("/api/notifications?unread=1", { jar: importer });
+  const leftAfterDelete = await request(`/api/bundles?search=${encodeURIComponent(goodName)}`, { jar: importer });
+  check(
+    "deleting the bundles takes their alerts with them (the cascade the schema promises)",
+    removedImports.json?.data?.affected === 2 &&
+      leftAfterDelete.json?.data?.total === 0 &&
+      (alertsAfterDelete.json?.data?.items ?? []).every((item) => !item.message.includes(goodName)),
+    `affected ${removedImports.json?.data?.affected}, left ${leftAfterDelete.json?.data?.total}, unread ${alertsAfterDelete.json?.data?.unread}`,
+  );
+
+  const removedImporter = await request(`/api/users/${importAccount.json?.data?.id}`, { method: "DELETE", jar });
+  check(
+    "the import account is removable once its bundles are gone",
+    removedImporter.status === 200,
+    `status ${removedImporter.status}`,
   );
 }
 

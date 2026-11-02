@@ -167,9 +167,10 @@ const csvStrings = z
 const csvEnum = <T extends readonly [string, ...string[]]>(values: T) =>
   csvStrings.pipe(z.array(z.enum(values)));
 
-const booleanParam = z
+/** Query-string boolean: `1`, `true` and `on` are true, everything else including absent is not. */
+export const booleanParam = z
   .string()
-  .transform((value) => value === "true" || value === "1")
+  .transform((value) => value === "true" || value === "1" || value === "on")
   .optional();
 
 /** Whitelist: anything outside it must never reach Prisma's orderBy. */
@@ -252,6 +253,58 @@ export const bulkBundleSchema = z.discriminatedUnion("action", [
   z.object({ action: z.enum(["archive", "unarchive", "delete"]), ids: z.array(id).min(1).max(200) }),
 ]);
 export type BulkBundleForm = z.infer<typeof bulkBundleSchema>;
+
+/**
+ * Stage 7. The notification read receipt is optional in both senses: no body means "mark
+ * everything unread", and ids are capped because the bell only ever shows a page of rows.
+ */
+export const markReadSchema = z.object({
+  ids: z.array(id).max(200).optional(),
+});
+export type MarkReadForm = z.infer<typeof markReadSchema>;
+
+/** Query string of `/api/audit` — the same param style as the bundle list. */
+export const auditQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  /** 20, not 25: the shared pagination control and its range label assume this default. */
+  pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  actorId: z.string().trim().min(1).optional(),
+  field: z.string().trim().min(1).max(40).optional(),
+  bundleId: z.string().trim().min(1).optional(),
+  search: z.string().trim().max(120).optional(),
+  kind: z.enum(["change", "comment"]).optional(),
+  dateFrom: z.coerce.date().optional(),
+  dateTo: z.coerce.date().optional(),
+  order: z.enum(["asc", "desc"]).default("desc"),
+});
+export type AuditQuery = z.infer<typeof auditQuerySchema>;
+
+/** `POST /api/bundles/import` as JSON; the multipart form field of the same name is parsed by the route. */
+export const importOptionsSchema = z.object({
+  /** Preview: validate and report, write nothing. */
+  dryRun: z.boolean().default(true),
+  /** Import the rows that passed; when false any error rejects the whole file. */
+  skipInvalid: z.boolean().default(true),
+});
+export type ImportOptions = z.infer<typeof importOptionsSchema>;
+
+/**
+ * Import limits. Declared with the schemas rather than in `lib/import.ts` because the
+ * dialog enforces them before uploading — a 40 MB file should be refused by the browser
+ * that tried to read it, not by the server after it arrived.
+ */
+export const IMPORT_MAX_BYTES = 1024 * 1024;
+export const IMPORT_MAX_ROWS = 500;
+/** What the dialog and the 413 message print — one MiB, said in megabytes. */
+export const IMPORT_MAX_LABEL = "1 MB";
+
+/** JSON variant of the import: the body carries the file text itself. */
+export const importJsonSchema = z.object({
+  text: z.string().min(1, "The file is empty").max(IMPORT_MAX_BYTES, "File is too large"),
+  dryRun: z.boolean().default(true),
+  skipInvalid: z.boolean().default(true),
+});
+export type ImportJsonForm = z.infer<typeof importJsonSchema>;
 
 /** Flattens a ZodError into `field → first message` for form UIs. */
 export function fieldErrors(error: z.ZodError): Record<string, string> {

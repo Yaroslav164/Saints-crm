@@ -1,5 +1,6 @@
 import { cacheLife, cacheTag, revalidateTag } from "next/cache";
 import { prisma } from "@/lib/db";
+import { syncRoiAlerts } from "@/lib/notifications";
 import { canManageBundle, isAdmin, type CurrentUser } from "@/lib/dal";
 import { forbidden, notFound } from "@/lib/http";
 import { calculateCR, calculateProfit, calculateROI, roundTo, formatDayKey, formatDayLabel } from "@/lib/utils";
@@ -333,6 +334,13 @@ async function finish(operations: Prisma.PrismaPromise<unknown>[], changes: Chan
   // PATCH alike, so a caller cannot forget it.
   if (affected > 0) revalidateTag("dashboard", { expire: 0 });
 
+  // The ROI alerts are derived from these same rows, so they are recomputed here too —
+  // archiving a losing bundle clears its alert, unarchiving it raises one again, and a
+  // status change that came with new numbers is checked against the current threshold.
+  // Reading the ids back off `changes` covers every bulk action, because each one that
+  // moves a value writes a row; a delete needs nothing, its alerts cascade with it.
+  if (affected > 0) await syncRoiAlerts([...new Set(changes.map((change) => change.bundleId))]);
+
   return { affected, skipped: requested - affected };
 }
 
@@ -417,6 +425,10 @@ export async function createBundle(user: CurrentUser, data: BundleForm): Promise
   });
 
   revalidateTag("dashboard", { expire: 0 });
+  // A bundle can be created already under the line — $500 spent against $300 revenue is
+  // the common case for a row that was tested elsewhere first and logged afterwards.
+  await syncRoiAlerts([created.id]);
+
   return toBundleListItem(created);
 }
 
@@ -466,6 +478,10 @@ export async function updateBundle(user: CurrentUser, id: string, patch: BundleU
   });
 
   revalidateTag("dashboard", { expire: 0 });
+  // The numbers moved here, so this is where a bundle crosses the alert line in either
+  // direction: raised when it falls under, cleared when the correction got it back over.
+  await syncRoiAlerts([updated.id]);
+
   return toBundleListItem(updated);
 }
 
