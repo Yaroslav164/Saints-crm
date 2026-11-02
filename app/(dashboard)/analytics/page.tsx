@@ -1,17 +1,13 @@
-import { StagePlaceholder } from "@/components/StagePlaceholder";
+import { AnalyticsView } from "@/components/analytics/AnalyticsView";
+import { requirePageUser } from "@/lib/dal";
 
-export default function AnalyticsPage() {
-  return (
-    <StagePlaceholder
-      title="Analytics"
-      description="Team effectiveness over a selectable period."
-      stage="stage 6"
-      items={[
-        "Profit by buyer and revenue by offer",
-        "Top bundles for a chosen date range",
-        "Funnel by status: how many tests reach profit",
-        "Average team ROI with period comparison",
-      ]}
-    />
-  );
+/**
+ * Screen shell. Nothing is read here but the session: every number on the page comes
+ * from `/api/analytics/*` through React Query, so the period lives in the client and
+ * the server never awaits it — the same contract the bundle list set in stage 3.
+ */
+export default async function AnalyticsPage() {
+  await requirePageUser();
+
+  return <AnalyticsView />;
 }

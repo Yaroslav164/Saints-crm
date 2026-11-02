@@ -1,4 +1,4 @@
-import type { BundleStatus } from "@/lib/generated/prisma/enums";
+import type { BundleStatus, Role } from "@/lib/generated/prisma/enums";
 import type { DayPoint } from "@/lib/dashboard";
 
 /** Wire shapes shared by the bundle API, the server pages and the client hooks. */
@@ -96,4 +96,127 @@ export type CreatedComment = {
   text: string;
   createdAt: string;
   author: Option;
+};
+
+/**
+ * Stage 6 — analytics and dictionaries. The analytics slices are the wire shape of
+ * numbers the server already derived: the client draws charts and tables from these
+ * fields and never recomputes a ROI, so the API answer and the chart cannot disagree.
+ */
+
+/** Inclusive UTC day bounds of an analytics period, plus the period before it. */
+export type AnalyticsWindowDto = {
+  from: string;
+  to: string;
+  days: number;
+  previousFrom: string;
+  previousTo: string;
+};
+
+/** Money/traffic totals over one dimension (team, buyer, offer or bundle). */
+export type MetricSlice = {
+  spent: number;
+  revenue: number;
+  profit: number;
+  roi: number;
+  clicks: number;
+  conversions: number;
+  cr: number;
+  /** Number of bundles that contributed to this slice. */
+  bundles: number;
+};
+
+export type BuyerSlice = MetricSlice & { buyer: Option };
+
+export type OfferSlice = MetricSlice & {
+  offer: Option;
+  /** Standard payout from the dictionary, as context for the offer's CR. */
+  payoutUSD: number;
+};
+
+/**
+ * One step of the status funnel. `share` is of all bundles, `conversion` is against
+ * the previous step, so the screen can show both without the client doing arithmetic.
+ */
+export type FunnelStage = {
+  key: string;
+  label: string;
+  count: number;
+  share: number;
+  conversion: number | null;
+};
+
+export type AnalyticsSummary = {
+  window: AnalyticsWindowDto;
+  totals: MetricSlice;
+  /** Same length, ending the day before this window starts. */
+  previous: MetricSlice;
+  profitChange: number;
+  roiChange: number;
+  /** Mean of per-bundle ROI, unlike team ROI which is weighted by spend. */
+  avgBundleRoi: number;
+  profitableShare: number;
+  counts: { active: number; archived: number; inWindow: number };
+  funnel: FunnelStage[];
+};
+
+export type TopBundleRow = MetricSlice & {
+  id: string;
+  name: string;
+  status: BundleStatus;
+  offer: Option;
+  buyer: Option;
+};
+
+/**
+ * Dictionary rows. `bundleCount` is what lets the UI explain why an offer cannot be
+ * deleted while a tag can (its links to bundles are simply dropped).
+ */
+export type OfferRecord = {
+  id: string;
+  name: string;
+  url: string | null;
+  payoutUSD: number;
+  network: string | null;
+  isActive: boolean;
+  bundleCount: number;
+  createdAt: string;
+};
+
+export type GeoRecord = {
+  id: string;
+  code: string;
+  name: string;
+  bundleCount: number;
+};
+
+export type TagRecord = {
+  id: string;
+  name: string;
+  color: string;
+  bundleCount: number;
+};
+
+export type UserRecord = {
+  id: string;
+  name: string;
+  email: string;
+  role: Role;
+  isActive: boolean;
+  bundleCount: number;
+  createdAt: string;
+  /** Marks the caller's own row so the UI cannot offer self-deactivation. */
+  isSelf: boolean;
+};
+
+/** Every write to a dictionary answers the same shape: what went away and what it took with it. */
+export type RemovedRecord = {
+  id: string;
+  label: string;
+  /** GEO and TAG rows are dropped from this many bundles by the join table's cascade. */
+  unlinked?: number;
+};
+
+export type AppSettings = {
+  roiAlertThreshold: number;
 };

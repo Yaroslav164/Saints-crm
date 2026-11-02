@@ -201,8 +201,10 @@ async function main() {
     // The list screen is real since stage 3: its server shell carries the filter
     // bar and the loading state, while the rows arrive over the API.
     ["/bundles", ["Bundles", "Export CSV", "New bundle", "Loading bundles", "Search by name"]],
-    ["/analytics", ["Analytics", "stage 6", "Profit by buyer"]],
-    ["/settings", ["Settings", "stage 6", "Offers CRUD"]],
+    // Stage 6 replaced both placeholders with screens that read their own queries, so what
+    // proves the shell arrived is the period control and the tab strip, not a number.
+    ["/analytics", ["Analytics", "Profit by buyer", "Offer performance", "From idea to scale", "Top bundles for the period", "30 days"]],
+    ["/settings", ["Settings", "Offers", "GEOs", "Tags", "Buyers", "Alerts", "New offer"]],
   ]) {
     const page = await request(path, { jar });
     const missing = needles.filter((needle) => !page.text.includes(needle));
@@ -578,6 +580,263 @@ async function main() {
     `${(afterArchive.json?.data?.activity ?? []).length} entries`,
   );
 
+  // 11b. Dictionaries (stage 6). Rows created here are deleted again, and every seeded
+  // row the block touches is put back the way it was, so the run stays self-cleaning.
+  const stamp = Date.now();
+  const offerName = `Smoke offer ${stamp}`;
+  // Deliberately not a superstring of `offerName`, so "the old name is gone" can be
+  // asserted with a plain substring check on the page payload.
+  const renamedOffer = `Renamed smoke offer ${stamp}`;
+
+  const anonOffers = await request("/api/offers");
+  check("GET /api/offers requires a session", anonOffers.status === 401, `status ${anonOffers.status}`);
+
+  const buyerRead = await request("/api/offers", { jar: buyer });
+  check(
+    "a buyer may read the dictionaries the form is built from",
+    buyerRead.status === 200 && Array.isArray(buyerRead.json?.data),
+    `status ${buyerRead.status}`,
+  );
+
+  const buyerWrite = await request("/api/offers", { method: "POST", jar: buyer, body: { name: `Not yours ${stamp}` } });
+  check("only an admin writes a shared dictionary", buyerWrite.status === 403, `status ${buyerWrite.status}`);
+
+  const shortOffer = await request("/api/offers", { method: "POST", jar, body: { name: "x" } });
+  check(
+    "an offer name is validated on the server",
+    shortOffer.status === 422 && Boolean(shortOffer.json?.error?.fields?.name),
+    `status ${shortOffer.status}`,
+  );
+
+  const madeOffer = await request("/api/offers", { method: "POST", jar, body: { name: offerName, payoutUSD: 40, network: "Smoke" } });
+  const offerId = madeOffer.json?.data?.id;
+  check(
+    "POST /api/offers creates an active row with no bundles yet",
+    madeOffer.status === 200 &&
+      madeOffer.json?.data?.isActive === true &&
+      madeOffer.json?.data?.bundleCount === 0 &&
+      madeOffer.json?.data?.payoutUSD === 40,
+    `status ${madeOffer.status}`,
+  );
+
+  const dupeOffer = await request("/api/offers", { method: "POST", jar, body: { name: offerName } });
+  check("an offer name stays unique", dupeOffer.status === 409, `status ${dupeOffer.status}`);
+
+  // Filter options are cached under `facets`, so a new dictionary row must be visible on
+  // the very next render of /bundles — the same contract the dashboard tag has.
+  const facetsAfterCreate = await request("/bundles", { jar });
+  check(
+    "a new offer reaches the cached filter options at once",
+    facetsAfterCreate.text.includes(offerName),
+    "looked for the offer name in the /bundles payload",
+  );
+
+  const emptyOfferPatch = await request(`/api/offers/${offerId}`, { method: "PUT", jar, body: {} });
+  check("an empty offer patch is rejected", emptyOfferPatch.status === 422, `status ${emptyOfferPatch.status}`);
+
+  // The `.partial()` trap again: a partial built over a defaulted field would turn this
+  // into a full payload and blank the columns the admin never touched.
+  const deactivated = await request(`/api/offers/${offerId}`, { method: "PUT", jar, body: { isActive: false } });
+  check(
+    "PUT /api/offers/[id] changes only the field it was sent",
+    deactivated.status === 200 &&
+      deactivated.json?.data?.isActive === false &&
+      deactivated.json?.data?.name === offerName &&
+      deactivated.json?.data?.payoutUSD === 40,
+    JSON.stringify(deactivated.json?.data ?? deactivated.json?.error),
+  );
+
+  const facetsAfterDeactivate = await request("/bundles", { jar });
+  check(
+    "a deactivated offer leaves the filter options while the row stays",
+    !facetsAfterDeactivate.text.includes(offerName) && (await request("/api/offers", { jar })).text?.includes(offerName),
+    "checked both the page and the dictionary list",
+  );
+
+  const renamedRow = await request(`/api/offers/${offerId}`, { method: "PUT", jar, body: { name: renamedOffer, isActive: true } });
+  const facetsAfterRename = await request("/bundles", { jar });
+  check(
+    "a rename invalidates the cached facets in both directions",
+    renamedRow.status === 200 &&
+      facetsAfterRename.text.includes(renamedOffer) &&
+      !facetsAfterRename.text.includes(offerName),
+    "looked for the new name and the absence of the old one",
+  );
+
+  const seededOfferInUse = (await request("/api/offers", { jar })).json?.data?.find((offer) => offer.bundleCount > 0);
+  const refuseDelete = await request(`/api/offers/${seededOfferInUse?.id}`, { method: "DELETE", jar });
+  check(
+    "an offer that bundles still use cannot be deleted",
+    refuseDelete.status === 409 && (refuseDelete.json?.error?.message ?? "").includes("deactivate"),
+    `status ${refuseDelete.status}`,
+  );
+
+  const madeGeo = await request("/api/geos", { method: "POST", jar, body: { code: "qa", name: "Smoke Land" } });
+  const geoId = madeGeo.json?.data?.id;
+  check(
+    "a GEO code is normalised to upper case",
+    madeGeo.status === 200 && madeGeo.json?.data?.code === "QA",
+    `status ${madeGeo.status}, code ${madeGeo.json?.data?.code}`,
+  );
+
+  const badGeo = await request("/api/geos", { method: "POST", jar, body: { code: "UNITED", name: "Too long" } });
+  check("a GEO code must be two or three letters", badGeo.status === 422, `status ${badGeo.status}`);
+
+  const renamedGeo = await request(`/api/geos/${geoId}`, { method: "PUT", jar, body: { name: "Smoke Land II" } });
+  check(
+    "a GEO keeps its code when only the name is sent",
+    renamedGeo.json?.data?.code === "QA" && renamedGeo.json?.data?.name === "Smoke Land II",
+    JSON.stringify(renamedGeo.json?.data ?? renamedGeo.json?.error),
+  );
+
+  const bundleGeos = (await request(`/api/bundles/${detailId}`, { jar })).json?.data?.geos ?? [];
+  await request(`/api/bundles/${detailId}`, {
+    method: "PUT",
+    jar,
+    body: { geoIds: [...bundleGeos.map((geo) => geo.id), geoId] },
+  });
+  const removedGeo = await request(`/api/geos/${geoId}`, { method: "DELETE", jar });
+  const bundleAfterGeoGone = await request(`/api/bundles/${detailId}`, { jar });
+  check(
+    "deleting a GEO unlinks it, reports the count and keeps the bundle",
+    removedGeo.status === 200 &&
+      removedGeo.json?.data?.unlinked === 1 &&
+      (bundleAfterGeoGone.json?.data?.geos ?? []).length === bundleGeos.length,
+    JSON.stringify(removedGeo.json?.data ?? removedGeo.json?.error),
+  );
+
+  const badTag = await request("/api/tags", { method: "POST", jar, body: { name: `nope-${stamp}`, color: "red" } });
+  check(
+    "a tag colour must be a hex value",
+    badTag.status === 422 && Boolean(badTag.json?.error?.fields?.color),
+    `status ${badTag.status}`,
+  );
+
+  const madeTag = await request("/api/tags", { method: "POST", jar, body: { name: `smoke-${stamp}`, color: "#123456" } });
+  const tagId = madeTag.json?.data?.id;
+  const recoloredTag = await request(`/api/tags/${tagId}`, { method: "PUT", jar, body: { color: "#abcdef" } });
+  check(
+    "a tag keeps its name when only the colour is sent",
+    madeTag.status === 200 && recoloredTag.json?.data?.name === `smoke-${stamp}` && recoloredTag.json?.data?.color === "#abcdef",
+    JSON.stringify(recoloredTag.json?.data ?? recoloredTag.json?.error),
+  );
+
+  const removedTag = await request(`/api/tags/${tagId}`, { method: "DELETE", jar });
+  check("an unused tag is removable", removedTag.status === 200 && removedTag.json?.data?.unlinked === 0, `status ${removedTag.status}`);
+
+  const removedOffer = await request(`/api/offers/${offerId}`, { method: "DELETE", jar });
+  check(
+    "an offer nothing uses is removable and the facet cache forgets it",
+    removedOffer.status === 200 &&
+      removedOffer.json?.data?.label === renamedOffer &&
+      !(await request("/bundles", { jar })).text.includes(renamedOffer),
+    `status ${removedOffer.status}`,
+  );
+
+  const anonUsers = await request("/api/users");
+  check("GET /api/users requires a session", anonUsers.status === 401, `status ${anonUsers.status}`);
+
+  const buyerUsers = await request("/api/users", { jar: buyer });
+  check("a buyer cannot read the account list", buyerUsers.status === 403, `status ${buyerUsers.status}`);
+
+  const users = (await request("/api/users", { jar })).json?.data ?? [];
+  const seededEmails = ["admin@saints.com", "ivanov@saints.com", "petrov@saints.com", "sidorov@saints.com"];
+  const seeded = users.filter((row) => seededEmails.includes(row.email));
+  check(
+    "the account list carries roles and marks the caller's own row",
+    seeded.length === 4 &&
+      seeded.filter((row) => row.role === "ADMIN").length === 1 &&
+      users.filter((row) => row.isSelf).length === 1,
+    `${users.length} accounts, ${seeded.length} seeded`,
+  );
+
+  const selfDemote = await request(`/api/users/${users.find((row) => row.isSelf)?.id}`, { method: "PUT", jar, body: { role: "USER" } });
+  check("an admin cannot strip their own access", selfDemote.status === 400, `status ${selfDemote.status}`);
+
+  const busyUserId = mineItems[0]?.buyer?.id;
+  const deleteBusy = await request(`/api/users/${busyUserId}`, { method: "DELETE", jar });
+  check(
+    "an account that still owns bundles cannot be deleted",
+    deleteBusy.status === 409 && (deleteBusy.json?.error?.message ?? "").includes("reassign"),
+    `status ${deleteBusy.status}`,
+  );
+
+  const takenEmail = await request(`/api/users/${busyUserId}`, { method: "PUT", jar, body: { email: "petrov@saints.com" } });
+  check("an account email stays unique", takenEmail.status === 409, `status ${takenEmail.status}`);
+
+  // The two accounts this run registered own nothing, so they are removable — which both
+  // covers the happy delete path and stops the demo team growing on every run.
+  const smokeAccounts = [created.json?.data?.id, anonApi.json?.data?.id].filter(Boolean);
+  const removedStatuses = [];
+  for (const accountId of smokeAccounts) {
+    removedStatuses.push((await request(`/api/users/${accountId}`, { method: "DELETE", jar })).status);
+  }
+  check(
+    "an account that owns nothing is removable",
+    smokeAccounts.length === 2 &&
+      removedStatuses.every((status) => status === 200) &&
+      (await request("/api/users", { jar })).json?.data?.length === users.length - smokeAccounts.length,
+    `${removedStatuses.join("/")} of ${smokeAccounts.length}, was ${users.length} accounts`,
+  );
+
+  const renamedBuyer = await request(`/api/users/${busyUserId}`, { method: "PUT", jar, body: { name: "Renamed Buyer" } });
+  const facetsAfterBuyerRename = await request("/bundles", { jar });
+  check(
+    "a renamed buyer reaches the cached filter options",
+    renamedBuyer.status === 200 &&
+      facetsAfterBuyerRename.text.includes("Renamed Buyer") &&
+      !facetsAfterBuyerRename.text.includes("Ivan Ivanov"),
+    "looked for the new name and the absence of the old one",
+  );
+  await request(`/api/users/${busyUserId}`, { method: "PUT", jar, body: { name: "Ivan Ivanov" } });
+
+  // `authorize()` refuses a disabled account, which is what makes the row meaningful —
+  // without it "disable" would be a badge and nothing more.
+  const disabledBuyer = await request(`/api/users/${busyUserId}`, { method: "PUT", jar, body: { isActive: false } });
+  const rejectedSignIn = await signInSession("ivanov@saints.com", "saints2026");
+  check(
+    "a disabled account cannot start a session",
+    disabledBuyer.status === 200 && disabledBuyer.json?.data?.isActive === false && !rejectedSignIn.has("authjs.session-token"),
+    `status ${disabledBuyer.status}`,
+  );
+  await request(`/api/users/${busyUserId}`, { method: "PUT", jar, body: { isActive: true } });
+  const restoredSignIn = await signInSession("ivanov@saints.com", "saints2026");
+  check(
+    "re-enabling the account lets it sign in again",
+    restoredSignIn.has("authjs.session-token"),
+    "the buyer jar used above is a separate session",
+  );
+
+  const buyerThreshold = await request("/api/settings", { jar: buyer });
+  check("a buyer may read the alert threshold", buyerThreshold.status === 200 && Number.isFinite(buyerThreshold.json?.data?.roiAlertThreshold), `status ${buyerThreshold.status}`);
+
+  const buyerThresholdWrite = await request("/api/settings", { method: "PUT", jar: buyer, body: { roiAlertThreshold: -50 } });
+  check("only an admin moves the alert threshold", buyerThresholdWrite.status === 403, `status ${buyerThresholdWrite.status}`);
+
+  const outOfRange = await request("/api/settings", { method: "PUT", jar, body: { roiAlertThreshold: 5000 } });
+  check("the threshold is bounded", outOfRange.status === 422, `status ${outOfRange.status}`);
+
+  const savedThreshold = await request("/api/settings", { method: "PUT", jar, body: { roiAlertThreshold: -35 } });
+  const readBackThreshold = await request("/api/settings", { jar });
+  check(
+    "PUT /api/settings stores the value and answers with what it kept",
+    savedThreshold.json?.data?.roiAlertThreshold === -35 && readBackThreshold.json?.data?.roiAlertThreshold === -35,
+    JSON.stringify(savedThreshold.json?.data ?? savedThreshold.json?.error),
+  );
+  await request("/api/settings", { method: "PUT", jar, body: { roiAlertThreshold: -20 } });
+
+  const settingsPage = await request("/settings", { jar });
+  const buyerSettingsPage = await request("/settings", { jar: buyer });
+  check(
+    "the dictionaries screen is read-only for a buyer",
+    settingsPage.status === 200 &&
+      buyerSettingsPage.status === 200 &&
+      settingsPage.text.includes("New offer") &&
+      !buyerSettingsPage.text.includes("New offer") &&
+      !buyerSettingsPage.text.includes("Buyers"),
+    `admin ${settingsPage.status}, buyer ${buyerSettingsPage.status}`,
+  );
+
   const page = await request(`/bundles/${detailId}`, { jar });
   check(
     "GET /bundles/[id] renders the whole detail screen server-side",
@@ -626,6 +885,110 @@ async function main() {
     "the smoke bundle is deleted again",
     removed.json?.data?.affected === 1 && goneList.json?.data?.total === 0,
     `affected ${removed.json?.data?.affected}, left ${goneList.json?.data?.total}`,
+  );
+
+  // 12. Analytics (stage 6). The screen reads four endpoints over the same window, so the
+  // test that matters most is not "it returns 200" but "the four agree with each other".
+  for (const path of [
+    "/api/analytics/dashboard",
+    "/api/analytics/by-buyer",
+    "/api/analytics/by-offer",
+    "/api/analytics/top-bundles",
+  ]) {
+    const anon = await request(path);
+    check(`${path} requires a session`, anon.status === 401, `status ${anon.status}`);
+  }
+
+  const summary = (await request("/api/analytics/dashboard?days=30", { jar })).json?.data;
+  check(
+    "GET /api/analytics/dashboard answers with the period, its totals and the period before",
+    summary?.window?.days === 30 &&
+      summary?.totals?.spent > 0 &&
+      summary?.previous !== undefined &&
+      Array.isArray(summary?.funnel) &&
+      summary.funnel.length === 4 &&
+      summary.counts.active > 0,
+    JSON.stringify(summary?.totals ?? {}),
+  );
+  check(
+    "the funnel starts where the bundle counter stands",
+    summary?.funnel?.[0]?.count === summary?.counts?.active,
+    `funnel ${summary?.funnel?.[0]?.count}, active ${summary?.counts?.active}`,
+  );
+  check(
+    "team ROI is the window's revenue against its spend, not an average of ratios",
+    Math.abs(summary.totals.roi - ((summary.totals.revenue - summary.totals.spent) / summary.totals.spent) * 100) < 0.1,
+    `roi ${summary?.totals?.roi}`,
+  );
+
+  const byBuyer = (await request("/api/analytics/by-buyer?days=30", { jar })).json?.data;
+  const buyerSpent = (byBuyer?.rows ?? []).reduce((sum, row) => sum + row.spent, 0);
+  check(
+    "profit per buyer adds up to the team totals and is ranked",
+    Math.abs(buyerSpent - summary.totals.spent) < 0.05 &&
+      (byBuyer?.rows ?? []).every((row, index, all) => index === 0 || all[index - 1].profit >= row.profit),
+    `${byBuyer?.rows?.length} buyers, spent ${Math.round(buyerSpent)} vs ${summary?.totals?.spent}`,
+  );
+
+  const byOffer = (await request("/api/analytics/by-offer?days=30", { jar })).json?.data;
+  const offerRevenue = (byOffer?.rows ?? []).reduce((sum, row) => sum + row.revenue, 0);
+  check(
+    "efficiency per offer carries the dictionary payout and adds up to the revenue",
+    Math.abs(offerRevenue - summary.totals.revenue) < 0.05 && (byOffer?.rows ?? []).some((row) => row.payoutUSD > 0),
+    `${byOffer?.rows?.length} offers, revenue ${Math.round(offerRevenue)}`,
+  );
+
+  const badDays = await request("/api/analytics/dashboard?days=abc", { jar });
+  check("a period that is not a number is rejected", badDays.status === 422, `status ${badDays.status}`);
+
+  const longDays = await request("/api/analytics/dashboard?days=900", { jar });
+  check("a preset window is bounded", longDays.status === 422, `status ${longDays.status}`);
+
+  const reversed = await request("/api/analytics/dashboard?from=2026-11-01&to=2026-10-01", { jar });
+  check(
+    "a range the wrong way round names the field at fault",
+    reversed.status === 422 && Boolean(reversed.json?.error?.fields?.to),
+    `status ${reversed.status}`,
+  );
+
+  const day = (offset) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+  const ranged = (await request(`/api/analytics/dashboard?from=${day(7)}&to=${day(0)}`, { jar })).json?.data;
+  check(
+    "an explicit range is counted inclusively and compared to the span before it",
+    ranged?.window?.days === 8 && new Date(ranged.window.previousTo) < new Date(ranged.window.from),
+    JSON.stringify(ranged?.window ?? {}),
+  );
+
+  const best = (await request("/api/analytics/top-bundles?days=30&limit=3", { jar })).json?.data;
+  const worst = (await request("/api/analytics/top-bundles?days=30&limit=3&order=asc", { jar })).json?.data;
+  check(
+    "the ranking is capped, skips bundles without spend and flips with order",
+    (best?.rows ?? []).length > 0 &&
+      best.rows.length <= 3 &&
+      best.rows.every((row) => row.spent > 0) &&
+      best.rows[0].roi >= worst.rows[0].roi,
+    `best ${best?.rows?.[0]?.roi}%, worst ${worst?.rows?.[0]?.roi}%`,
+  );
+
+  const profitable = (await request("/api/analytics/top-bundles?days=30&status=PROFIT", { jar })).json?.data;
+  check(
+    "the status filter narrows the ranking",
+    (profitable?.rows ?? []).length > 0 && profitable.rows.every((row) => row.status === "PROFIT"),
+    `${profitable?.rows?.length} rows`,
+  );
+
+  const badStatus = await request("/api/analytics/top-bundles?status=NOT_A_STATUS", { jar });
+  check("an unknown status in the ranking filter is rejected", badStatus.status === 422, `status ${badStatus.status}`);
+
+  const analyticsPage = await request("/analytics?days=14", { jar });
+  const anonAnalyticsPage = await request("/analytics", { jar: createJar() });
+  check(
+    "GET /analytics renders the screen server-side and an anonymous visit is redirected with the path",
+    analyticsPage.status === 200 &&
+      analyticsPage.text.includes("Top bundles for the period") &&
+      anonAnalyticsPage.status === 307 &&
+      (anonAnalyticsPage.location ?? "").includes("from=%2Fanalytics"),
+    `page ${analyticsPage.status}, anonymous ${anonAnalyticsPage.status}`,
   );
 }
 

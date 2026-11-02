@@ -81,18 +81,32 @@ export const commentSchema = z.object({
   text: z.string().trim().min(1, "Comment cannot be empty").max(2000, "At most 2000 characters"),
 });
 
-export const bundleIdSchema = z.object({ id: id });
+/** Params of every `/api/…/[id]` route — a bundle, an offer, a GEO, anything cuid-keyed. */
+export const idParamSchema = z.object({ id: id });
+export const bundleIdSchema = idParamSchema;
 
-export const offerSchema = z.object({
+/**
+ * Dictionary schemas (stage 6). Same rule as the bundle form: the shared field
+ * object carries NO defaults, so `.partial()` for PUT cannot turn `{}` into a
+ * full payload; the create schema adds its defaults on top.
+ */
+const offerFields = z.object({
   name: z.string().trim().min(2, "At least 2 characters").max(120, "At most 120 characters"),
   url: z.union([z.url("Enter a valid URL"), z.literal("")]).optional(),
-  payoutUSD: money.default(0),
+  payoutUSD: money,
   network: z.string().trim().max(80, "At most 80 characters").optional(),
   isActive: z.boolean().optional(),
 });
+
+export const offerSchema = offerFields.extend({ payoutUSD: money.default(0) });
 export type OfferForm = z.infer<typeof offerSchema>;
 
-export const geoSchema = z.object({
+export const offerUpdateSchema = offerFields
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type OfferUpdateForm = z.infer<typeof offerUpdateSchema>;
+
+const geoFields = z.object({
   code: z
     .string()
     .trim()
@@ -102,27 +116,45 @@ export const geoSchema = z.object({
     .regex(/^[A-Z]{2,3}$/, "Use letters only, e.g. US"),
   name: z.string().trim().min(2, "At least 2 characters").max(60, "At most 60 characters"),
 });
+
+export const geoSchema = geoFields;
 export type GeoForm = z.infer<typeof geoSchema>;
 
-export const tagSchema = z.object({
+export const geoUpdateSchema = geoFields
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type GeoUpdateForm = z.infer<typeof geoUpdateSchema>;
+
+const tagFields = z.object({
   name: z.string().trim().min(1, "Required").max(40, "At most 40 characters"),
   color: z
     .string()
     .trim()
     .regex(/^#([\da-f]{3}|[\da-f]{6})$/i, "Use a hex colour, e.g. #6366f1"),
 });
+
+export const tagSchema = tagFields;
 export type TagForm = z.infer<typeof tagSchema>;
 
-export const userUpdateSchema = z.object({
-  name: z.string().trim().min(2).max(80).optional(),
-  email: z.email("Enter a valid email").optional(),
-  role: z.enum(["ADMIN", "USER"]).optional(),
-  isActive: z.boolean().optional(),
-});
+export const tagUpdateSchema = tagFields
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type TagUpdateForm = z.infer<typeof tagUpdateSchema>;
+
+export const userUpdateSchema = z
+  .object({
+    name: z.string().trim().min(2).max(80).optional(),
+    email: z.email("Enter a valid email").optional(),
+    role: z.enum(["ADMIN", "USER"]).optional(),
+    isActive: z.boolean().optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: "Nothing to update" });
+export type UserUpdateForm = z.infer<typeof userUpdateSchema>;
 
 export const settingsSchema = z.object({
   roiAlertThreshold: z.coerce.number().min(-100).max(1000),
 });
+export type SettingsForm = z.infer<typeof settingsSchema>;
 
 /**
  * List query for /api/bundles. Filters arrive as URL search params, so numbers
@@ -178,6 +210,42 @@ export const bundleQuerySchema = z.object({
   archived: booleanParam,
 });
 export type BundleQuery = z.infer<typeof bundleQuerySchema>;
+
+/**
+ * Analytics period (stage 6). A window is either a preset number of trailing days
+ * or an explicit inclusive range, and both are read as UTC day bounds because
+ * `BundleMetric.date` is a Postgres DATE — see `resolveWindow` in lib/analytics.ts.
+ * Each variant extends the plain field object and refines it last: in zod 4
+ * `.partial()` throws at runtime on a schema that already carries a refinement, so
+ * nothing below is derived from a refined schema.
+ */
+const analyticsWindowFields = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
+
+const orderedRange = (value: { from?: Date; to?: Date }) =>
+  !value.from || !value.to || value.from <= value.to;
+
+const rangeMessage = "Start date must be on or before the end date";
+
+export const analyticsWindowSchema = analyticsWindowFields.refine(orderedRange, {
+  message: rangeMessage,
+  path: ["to"],
+});
+export type AnalyticsWindowForm = z.infer<typeof analyticsWindowSchema>;
+
+export const topBundlesQuerySchema = analyticsWindowFields
+  .extend({
+    limit: z.coerce.number().int().min(1).max(50).default(10),
+    order: z.enum(["asc", "desc"]).default("desc"),
+    userId: z.string().trim().min(1).optional(),
+    offerId: z.string().trim().min(1).optional(),
+    status: csvEnum(bundleStatusValues).optional(),
+  })
+  .refine(orderedRange, { message: rangeMessage, path: ["to"] });
+export type TopBundlesQuery = z.infer<typeof topBundlesQuerySchema>;
 
 export const bulkBundleSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("status"), ids: z.array(id).min(1).max(200), status: bundleStatusSchema }),
