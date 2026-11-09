@@ -14,7 +14,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-saints_crm}
     volumes:
-      - db-data:/var/lib/postgresql/data
+      # postgres:18 keeps PGDATA in a major-version subdirectory and refuses to boot when a
+      # volume is mounted at the legacy `/var/lib/postgresql/data`, so the volume covers the
+      # parent directory instead.
+      - db-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-saints_crm}"]
       interval: 5s

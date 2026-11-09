@@ -444,6 +444,10 @@ AUTH_SECRET=$(openssl rand -base64 32) docker compose up -d --build
 # http://localhost:3000   (свой порт: APP_PORT=8080 docker compose up -d)
 ```
 
+Если 3000 занят (частый случай — другой Next-проект), поднимать на свободном порту и сразу с
+демо-данными: `APP_PORT=8080 SEED_ON_START=1 AUTH_SECRET=$(openssl rand -base64 32) docker compose
+up -d --build`.
+
 Что происходит на старте контейнера (`docker/entrypoint.sh`):
 
 | Шаг | Команда | Зачем |
@@ -491,10 +495,27 @@ server {
 Бэкап: `docker compose exec db pg_dump -U postgres saints_crm > backup.sql`.
 Диагностика: `docker compose logs -f app` (у сервиса есть healthcheck на `/auth/login`).
 
-Проверено на этой машине: `sh -n docker/entrypoint.sh` (POSIX-синтаксис) и то, что файл
-хранится с LF (`.gitattributes`, иначе Windows-чекаут ломает контейнер строкой
-`entrypoint.sh: not found`). Сам образ здесь не собирается — на этой машине нет Docker CLI,
-так что `docker compose build` остаётся шагом на VPS.
+Проверено на этой машине (Docker Desktop 29.9.2, linux/amd64, 2026-11-09): `docker compose up -d
+--build` собирает образ и поднимает стек — `db` становится `healthy`, entrypoint применяет обе
+миграции и при `SEED_ON_START=1` заливает демо-данные, после логина `/`, `/bundles`, `/analytics`
+и `/api/audit` отвечают 200. Локально стек гонялся на `APP_PORT=8080`: порт 3000 на машине занят
+другим проектом. Отдельно проверены `sh -n docker/entrypoint.sh` (POSIX-синтаксис) и `LF` для
+скрипта — его держит `.gitattributes`, иначе Windows-чекаут ломает контейнер строкой
+`entrypoint.sh: not found`.
+
+Две вещи в сборке неочевидны, и обе вылезли только на первом реальном прогоне:
+
+- **`builder` получает фиктивный `DATABASE_URL`.** Prisma 7 читает строку подключения из
+  `prisma7.config.ts` через `env("DATABASE_URL")`, а этот хелпер резолвится при загрузке конфига
+  и бросает `PrismaConfigEnvError`, если переменной нет, — то есть ещё до чтения схемы и до
+  `npm run build`. `.env` в образ не попадает (`.dockerignore`), а `environment:` в compose
+  действует только на запущенный контейнер, не на сборку. Поэтому в `Dockerfile` стоит заглушка
+  на `127.0.0.1`; в базу сборка при этом не ходит — роуты начинаются с `connection()`, страницы
+  читают сессию через `cookies()`, и `next build` с заведомо недоступным URL проходит целиком.
+- **Том базы монтируется в `/var/lib/postgresql`, а не в `.../data`.** В `postgres:18` `PGDATA`
+  лежит в подкаталоге с мажорной версией, и образ отказывается инициализироваться, если том висит
+  на легаси-пути: контейнер уходит в рестарт-луп с
+  `there appears to be PostgreSQL data in: /var/lib/postgresql/data`.
 
 ## Структура
 

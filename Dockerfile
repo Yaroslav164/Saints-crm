@@ -41,7 +41,14 @@ COPY . .
 # The generated client is gitignored, so it is produced here rather than copied in.
 # No .env: the build must not read a real database. `prisma generate` only parses the
 # schema, and every query in the app is behind a route handler or a page.
-ENV NEXT_TELEMETRY_DISABLED=1
+#
+# It still needs the variable to *exist*: Prisma 7 loads prisma7.config.ts and resolves the
+# datasource through `env("DATABASE_URL")`, which throws PrismaConfigEnvError when the name
+# is absent — before generate reads a single model. The throwaway value never reaches a
+# database (nothing queries during the build), and the real URL arrives at runtime through
+# compose's `environment`.
+ENV NEXT_TELEMETRY_DISABLED=1 \
+    DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build_none?schema=public"
 RUN npx prisma generate && npm run build
 
 ### runner
